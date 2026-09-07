@@ -15,7 +15,11 @@
 # Bestehende Tests, Snapshots und Fixtures.
 # `spec/` ist bewusst eng gefasst: ein Verzeichnis dieses Namens enthält oft
 # eine OpenAPI-Spezifikation, und die ist kein Test.
-MUSTER_TESTS='(\.test\.|\.spec\.|_test\.[a-z0-9]+$|(^|/)test_[^/]*\.py$|(^|/)tests?/|(^|/)__tests__/|(^|/)spec/[^/]*[._-](spec|test)\.[a-z0-9]+$|(^|/)conftest\.py$|\.snap$)'
+#
+# Die Liste muss decken, was der Testläufer entdeckt, sonst ist eine Datei zwar
+# ein Test, aber ungeschützt: `node --test` findet auch `helper-test.js` und
+# `test.js`, nicht nur `*.test.js`.
+MUSTER_TESTS='(\.test\.|\.spec\.|[-_]test\.[a-z0-9]+$|(^|/)test\.[a-z0-9]+$|(^|/)test_[^/]*\.py$|(^|/)tests?/|(^|/)__tests__/|(^|/)spec/[^/]*[._-](spec|test)\.[a-z0-9]+$|(^|/)conftest\.py$|\.snap$)'
 
 # Abhängigkeiten, Lockfiles, Build- und CI-Konfiguration.
 MUSTER_DEPS='((^|/)package(-lock)?\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.[a-z]+$|(^|/)npm-shrinkwrap\.json$|(^|/)requirements([-.][^/]*)?\.txt$|(^|/)pyproject\.toml$|(^|/)poetry\.lock$|(^|/)uv\.lock$|(^|/)go\.(mod|sum)$|(^|/)Cargo\.(toml|lock)$|(^|/)pytest\.ini$|(^|/)tox\.ini$|(^|/)\.github/workflows/)'

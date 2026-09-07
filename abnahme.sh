@@ -217,20 +217,24 @@ pruefe "kaputte JSON bricht nicht ab" "Runde 2 | sonnet | high" "$A"
 # --- Zusatz: Testanzahl gesunken ----------------------------------------
 echo
 echo "[+] Testanzahl gesunken"
-# Der realistische Weg: der Agent legt Tests an und raeumt sie spaeter
-# wieder weg. Die Suite bleibt dabei gruen, nur die Zahl sinkt.
+# Der Zaehler ist keine Dopplung der Diff-Bremse: hier faellt die Testanzahl,
+# ohne dass eine Testdatei angefasst wird. test/table.test.js erzeugt einen
+# Test je Eintrag aus src/cases.js -- Runde 2 kuerzt nur diese Tabelle.
 Z=$(neues_repo testanzahl)
 cat > "$Z/.stub/aktion" <<'A'
 if (( RUNDE == 1 )); then
-  cat > test/extra.test.js <<'T'
+  printf 'module.exports = ["a", "b", "c"]
+' > src/cases.js
+  cat > test/table.test.js <<'T'
 const test = require('node:test')
 const assert = require('node:assert/strict')
-test('extra a', () => { assert.ok(true) })
-test('extra b', () => { assert.ok(true) })
-test('extra c', () => { assert.ok(true) })
+for (const fall of require('../src/cases.js')) {
+  test(`case ${fall}`, () => { assert.ok(fall) })
+}
 T
 elif (( RUNDE == 2 )); then
-  rm -f test/extra.test.js
+  printf 'module.exports = ["a"]
+' > src/cases.js
 fi
 echo "// round $RUNDE" >> src/tasklist.js
 git add -A >/dev/null 2>&1
@@ -238,11 +242,11 @@ git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
 A
 A=$(lauf "$Z" 5)
 pruefe "gesunkene Testanzahl erkannt" "Testanzahl gesunken" "$A"
-pruefe "Suite war dabei gruen"        "27 auf 24"           "$A"
+pruefe "ohne dass ein Test angefasst wurde" "39 auf 37" "$A"
 nicht  "keine vierte Runde"           "=== Runde 4/5"       "$A"
 
-# Eine geloeschte Testdatei laesst die Suite gruen -- gerade deshalb braucht es
-# die zweite Bremse. Sie nennt auch gleich die Zahlen.
+# Eine geloeschte Testdatei laesst die Suite gruen. Sie faellt jetzt schon eine
+# Stufe frueher auf als am Zaehler, naemlich am Diff der Runde.
 Z=$(neues_repo testdatei_weg)
 cat > "$Z/.stub/aktion" <<'A'
 if (( RUNDE == 2 )); then rm -f test/tasklist.test.js; fi
@@ -251,10 +255,9 @@ git add -A >/dev/null 2>&1
 git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
 A
 A=$(lauf "$Z" 5)
-pruefe "geloeschte Testdatei stoppt den Lauf" "Testanzahl gesunken (24 auf 17)" "$A"
-nicht  "keine vierte Runde"                   "=== Runde 4/5"                    "$A"
+pruefe "geloeschte Testdatei stoppt den Lauf" "hat bestehende Tests ge" "$A"
+nicht  "keine vierte Runde"                   "=== Runde 4/5"           "$A"
 
-# --- Zusatz: Vorpruefungen ----------------------------------------------
 # Die Zusage aus ABWEICHUNGEN E4: was kein Hook sehen kann, faengt loop.sh am
 # Diff. Der Stub aendert einen versionierten Test direkt auf der Platte, also
 # an jedem Guard vorbei -- die Suite bleibt gruen und die Testanzahl gleich.
