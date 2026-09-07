@@ -255,6 +255,26 @@ pruefe "geloeschte Testdatei stoppt den Lauf" "Testanzahl gesunken (24 auf 17)" 
 nicht  "keine vierte Runde"                   "=== Runde 4/5"                    "$A"
 
 # --- Zusatz: Vorpruefungen ----------------------------------------------
+# Die Zusage aus ABWEICHUNGEN E4: was kein Hook sehen kann, faengt loop.sh am
+# Diff. Der Stub aendert einen versionierten Test direkt auf der Platte, also
+# an jedem Guard vorbei -- die Suite bleibt gruen und die Testanzahl gleich.
+echo
+echo "[+] Diff-Bremse fuer bestehende Tests"
+Z=$(neues_repo test_geaendert)
+cat > "$Z/.stub/aktion" <<'A'
+if (( RUNDE == 2 )); then
+  sed -i "s/assert.deepEqual(openTasks/assert.ok(openTasks/" test/tasklist.test.js
+  sed -i "s/), \['first', 'second'\])/))/" test/tasklist.test.js
+fi
+echo "// round $RUNDE" >> src/tasklist.js
+git add -A >/dev/null 2>&1
+git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
+A
+A=$(lauf "$Z" 5)
+pruefe "geaenderter Test faellt am Diff auf" "hat bestehende Tests ge" "$A"
+pruefe "Datei wird genannt"                  "test/tasklist.test.js"          "$A"
+nicht  "keine dritte Runde"                  "=== Runde 3/5"                  "$A"
+
 echo
 echo "[+] Vorpruefungen"
 Z=$(neues_repo vor_dreckig)
