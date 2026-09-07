@@ -10,7 +10,7 @@ Selbst nachvollziehen:
 
 ```bash
 node --test        # 36 Tests, davon 29 Guard-Tests mit 90 Einzelfaellen
-./abnahme.sh       # 34 Pruefungen der Schleifenlogik gegen einen claude-Stub
+./abnahme.sh       # 37 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
 `abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
@@ -141,8 +141,18 @@ selbst wirkungslos gewesen wäre (siehe ABWEICHUNGEN B1):
 | legt 3 Tests an, löscht sie eine Runde später | `Testanzahl gesunken (27 auf 24) in Runde 2` |
 | löscht eine ganze Testdatei | `Testanzahl gesunken (24 auf 17) in Runde 2` |
 
-Die Suite bleibt in beiden Fällen grün — genau deshalb braucht es diese Bremse
-neben dem Rückgabewert der Tests.
+Und die dritte, die nach dem adversarialen Review dazukam (ABWEICHUNGEN E4):
+
+| Stub-Verhalten | gemessen |
+|---|---|
+| ändert `test/tasklist.test.js` direkt auf der Platte, an jedem Hook vorbei | `Runde 2 hat bestehende Tests geändert: test/tasklist.test.js` |
+| löscht eine ganze Testdatei | dieselbe Bremse, eine Stufe früher als der Zähler |
+
+Die Suite bleibt in allen Fällen grün — genau deshalb braucht es diese Bremsen
+neben dem Rückgabewert der Tests. Und sie sind nicht redundant: der Zähler
+fängt den Fall, den der Diff nicht sieht — eine tabellengetriebene Testdatei,
+deren Fälle aus `src/cases.js` kommen, verliert Tests, ohne dass eine Testdatei
+angefasst wird (`Testanzahl gesunken (39 auf 37)`).
 
 ## 7. Modellwahl greift — erfüllt
 

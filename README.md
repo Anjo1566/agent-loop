@@ -87,6 +87,7 @@ lange dauern, ohne dass ein Kontextfenster überläuft.
 | Runde ohne neuen Commit | Stillstand |
 | zwei Runden ohne Codeänderung | der Agent dreht im Kreis |
 | Testsuite rot | eine Reparaturrunde, danach Abbruch |
+| ein versionierter Test wurde geändert | am Diff der Runde, egal auf welchem Weg |
 | Testanzahl gesunken | Verdacht auf gelöschte oder geskippte Tests |
 | Rundenlimit erreicht | Abbruch |
 | `claude` endet mit Fehler, Turn-Deckel oder Budget-Deckel | Abbruch |
@@ -132,7 +133,7 @@ läuft nur ins Leere.
 
 ```bash
 node --test     # 36 Tests, davon 29 fuer die Guards
-./abnahme.sh    # 34 Pruefungen der Schleifenlogik gegen einen claude-Stub
+./abnahme.sh    # 37 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
 `abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
