@@ -15,16 +15,21 @@ const path = require('node:path')
 const REPO = path.resolve(__dirname, '..')
 const HOOKS = path.join(REPO, '.agents', 'hooks')
 
-// A real, existing test file for the "existing tests are immutable" rule.
-// This file itself, so the check does not depend on the example project —
-// which the README says you may delete when moving the loop to another repo.
+// A real, existing, tracked test file for the "existing tests are immutable"
+// rule: this file itself. Using it rather than one from the example project
+// keeps these tests working after the example project is removed, which the
+// README explicitly invites.
 const EXISTING_TEST = __filename
+const EXISTING_TEST_REL = path.relative(REPO, __filename).replace(/\\/g, '/')
 
 function runGuard (script, payload) {
   const result = spawnSync('bash', [path.join(HOOKS, script)], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    cwd: REPO
+    cwd: REPO,
+    // The hook runner exports this; the guards resolve relative paths against
+    // it rather than against their own working directory.
+    env: { ...process.env, CLAUDE_PROJECT_DIR: REPO }
   })
   if (result.error) throw result.error
   return { code: result.status, stderr: result.stderr }
@@ -93,7 +98,7 @@ test('guard-files blocks NotebookEdit, which carries a different path key', () =
 })
 
 test('guard-files allows ordinary source files', () => {
-  allows('guard-files.sh', fileCall('Write', path.join(REPO, 'src', 'tasklist.js')), 'source file')
+  allows('guard-files.sh', fileCall('Write', path.join(REPO, 'src', 'anything.js')), 'source file')
 })
 
 test('guard-files fails closed on an unusable payload', () => {
@@ -110,8 +115,8 @@ test('guard-bash blocks discarding work', () => {
   blocks('guard-bash.sh', bashCall('git stash'), 'stash')
   blocks('guard-bash.sh', bashCall('git reset --hard HEAD~1'), 'reset --hard')
   blocks('guard-bash.sh', bashCall('git clean -fdx'), 'clean')
-  blocks('guard-bash.sh', bashCall('git restore test/tasklist.test.js'), 'restore')
-  blocks('guard-bash.sh', bashCall('git checkout HEAD -- test/tasklist.test.js'), 'checkout a ref')
+  blocks('guard-bash.sh', bashCall(`git restore ${EXISTING_TEST_REL}`), 'restore')
+  blocks('guard-bash.sh', bashCall(`git checkout HEAD -- ${EXISTING_TEST_REL}`), 'checkout a ref')
   blocks('guard-bash.sh', bashCall('rm -rf /'), 'rm -rf /')
 })
 
@@ -134,9 +139,9 @@ test('guard-bash allows a push to the agent branch', () => {
 })
 
 test('guard-bash closes the shell route around the file guard', () => {
-  blocks('guard-bash.sh', bashCall("sed -i 's/assert/\\/\\/assert/' test/tasklist.test.js"), 'sed -i on a test')
-  blocks('guard-bash.sh', bashCall('cat > test/tasklist.test.js'), 'redirect over a test')
-  blocks('guard-bash.sh', bashCall('rm test/tasklist.test.js'), 'rm a test')
+  blocks('guard-bash.sh', bashCall(`sed -i 's/assert/x/' ${EXISTING_TEST_REL}`), 'sed -i on a test')
+  blocks('guard-bash.sh', bashCall(`cat > ${EXISTING_TEST_REL}`), 'redirect over a test')
+  blocks('guard-bash.sh', bashCall(`rm ${EXISTING_TEST_REL}`), 'rm a test')
   blocks('guard-bash.sh', bashCall('echo x >> .claude/settings.json'), 'append to settings')
   blocks('guard-bash.sh', bashCall('chmod -x .agents/hooks/guard-bash.sh'), 'disarm a guard')
   blocks('guard-bash.sh', bashCall('cat .env'), 'read a secret')
@@ -144,7 +149,7 @@ test('guard-bash closes the shell route around the file guard', () => {
 
 test('guard-bash allows ordinary work', () => {
   allows('guard-bash.sh', bashCall('node --test'), 'run the tests')
-  allows('guard-bash.sh', bashCall('git diff -- test/tasklist.test.js'), 'read a test through git')
+  allows('guard-bash.sh', bashCall(`git diff -- ${EXISTING_TEST_REL}`), 'read a test through git')
   allows('guard-bash.sh', bashCall('git add -A && git commit -m "add close()"'), 'commit')
   allows('guard-bash.sh', bashCall('echo "module.exports = {}" > src/new-module.js'), 'write a source file')
 })

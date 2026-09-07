@@ -50,6 +50,10 @@ neues_repo() {
   mkdir -p "$BASIS"
   git clone -q "$QUELLE" "$ziel"
   git -C "$ziel" remote remove origin
+  # Der Klon uebernimmt den Branch, auf dem das Quell-Repo gerade steht. loop.sh
+  # verzweigt aber von main, also wird main hier auf den geklonten Stand gesetzt
+  # -- sonst haengt die Abnahme daran, welchen Branch man gerade ausgecheckt hat.
+  git -C "$ziel" switch -q -C main
   git -C "$ziel" config user.name "Abnahme"
   git -C "$ziel" config user.email "abnahme@example.invalid"
 
@@ -217,20 +221,24 @@ pruefe "kaputte JSON bricht nicht ab" "Runde 2 | sonnet | high" "$A"
 # --- Zusatz: Testanzahl gesunken ----------------------------------------
 echo
 echo "[+] Testanzahl gesunken"
-# Der realistische Weg: der Agent legt Tests an und raeumt sie spaeter
-# wieder weg. Die Suite bleibt dabei gruen, nur die Zahl sinkt.
+# Der Zaehler ist keine Dopplung der Diff-Bremse: hier faellt die Testanzahl,
+# ohne dass eine Testdatei angefasst wird. test/table.test.js erzeugt einen
+# Test je Eintrag aus src/cases.js -- Runde 2 kuerzt nur diese Tabelle.
 Z=$(neues_repo testanzahl)
 cat > "$Z/.stub/aktion" <<'A'
 if (( RUNDE == 1 )); then
-  cat > test/extra.test.js <<'T'
+  printf 'module.exports = ["a", "b", "c"]
+' > src/cases.js
+  cat > test/table.test.js <<'T'
 const test = require('node:test')
 const assert = require('node:assert/strict')
-test('extra a', () => { assert.ok(true) })
-test('extra b', () => { assert.ok(true) })
-test('extra c', () => { assert.ok(true) })
+for (const fall of require('../src/cases.js')) {
+  test(`case ${fall}`, () => { assert.ok(fall) })
+}
 T
 elif (( RUNDE == 2 )); then
-  rm -f test/extra.test.js
+  printf 'module.exports = ["a"]
+' > src/cases.js
 fi
 echo "// round $RUNDE" >> src/tasklist.js
 git add -A >/dev/null 2>&1
@@ -238,11 +246,11 @@ git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
 A
 A=$(lauf "$Z" 5)
 pruefe "gesunkene Testanzahl erkannt" "Testanzahl gesunken" "$A"
-pruefe "Suite war dabei gruen"        "27 auf 24"           "$A"
+pruefe "ohne dass ein Test angefasst wurde" "39 auf 37" "$A"
 nicht  "keine vierte Runde"           "=== Runde 4/5"       "$A"
 
-# Eine geloeschte Testdatei laesst die Suite gruen -- gerade deshalb braucht es
-# die zweite Bremse. Sie nennt auch gleich die Zahlen.
+# Eine geloeschte Testdatei laesst die Suite gruen. Sie faellt jetzt schon eine
+# Stufe frueher auf als am Zaehler, naemlich am Diff der Runde.
 Z=$(neues_repo testdatei_weg)
 cat > "$Z/.stub/aktion" <<'A'
 if (( RUNDE == 2 )); then rm -f test/tasklist.test.js; fi
@@ -251,10 +259,63 @@ git add -A >/dev/null 2>&1
 git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
 A
 A=$(lauf "$Z" 5)
-pruefe "geloeschte Testdatei stoppt den Lauf" "Testanzahl gesunken (24 auf 17)" "$A"
-nicht  "keine vierte Runde"                   "=== Runde 4/5"                    "$A"
+pruefe "geloeschte Testdatei stoppt den Lauf" "hat bestehende Tests ge" "$A"
+nicht  "keine vierte Runde"                   "=== Runde 4/5"           "$A"
 
-# --- Zusatz: Vorpruefungen ----------------------------------------------
+# Die Zusage aus ABWEICHUNGEN E4: was kein Hook sehen kann, faengt loop.sh am
+# Diff. Der Stub aendert einen versionierten Test direkt auf der Platte, also
+# an jedem Guard vorbei -- die Suite bleibt gruen und die Testanzahl gleich.
+echo
+echo "[+] Diff-Bremse fuer bestehende Tests"
+Z=$(neues_repo test_geaendert)
+cat > "$Z/.stub/aktion" <<'A'
+if (( RUNDE == 2 )); then
+  sed -i "s/assert.deepEqual(openTasks/assert.ok(openTasks/" test/tasklist.test.js
+  sed -i "s/), \['first', 'second'\])/))/" test/tasklist.test.js
+fi
+echo "// round $RUNDE" >> src/tasklist.js
+git add -A >/dev/null 2>&1
+git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
+A
+A=$(lauf "$Z" 5)
+pruefe "geaenderter Test faellt am Diff auf" "hat bestehende Tests ge" "$A"
+pruefe "Datei wird genannt"                  "test/tasklist.test.js"          "$A"
+nicht  "keine dritte Runde"                  "=== Runde 3/5"                  "$A"
+
+# Das README nennt eine Liste von Dateien fuer den Umzug in ein anderes Repo und
+# behauptet, das Beispielprojekt sei entbehrlich. Hier wird genau diese Liste
+# gebaut -- nichts sonst -- und geprueft, ob Guards und Vorpruefung dort laufen.
+echo
+echo "[+] Umzug in ein fremdes Repo"
+ZIEL="$BASIS/umzug"
+rm -rf "$ZIEL"; mkdir -p "$ZIEL/test" "$ZIEL/src"
+for D in CLAUDE.md round.md loop.sh TASKS.md STATUS.md QUESTIONS.md \
+         .gitattributes .gitignore abnahme.sh; do cp "$QUELLE/$D" "$ZIEL/"; done
+cp -r "$QUELLE/.agents" "$QUELLE/.claude" "$ZIEL/"
+cp "$QUELLE/test/guards.test.js" "$QUELLE/test/guards-regression.test.js" "$ZIEL/test/"
+echo 'module.exports = (a, b) => a + b' > "$ZIEL/src/add.js"
+{ echo "const t = require('node:test')"
+  echo "const a = require('node:assert/strict')"
+  echo "t('adds', () => { a.equal(require('../src/add.js')(2, 2), 4) })"
+} > "$ZIEL/test/add.test.js"
+( cd "$ZIEL"
+  git init -q -b main
+  git config user.name Abnahme
+  git config user.email abnahme@example.invalid
+  git add -A >/dev/null
+  git update-index --chmod=+x .agents/hooks/*.sh loop.sh abnahme.sh
+  git commit -qm "initial" )
+A=$( cd "$ZIEL" && node --test --test-reporter=tap 2>&1 )
+pruefe "Guards laufen ohne das Beispielprojekt" "# fail 0" "$A"
+mkdir -p "$ZIEL/.stub"
+echo ".stub/" >> "$ZIEL/.git/info/exclude"
+{ echo '#!/usr/bin/env bash'
+  echo 'echo "{\"type\":\"result\",\"is_error\":false,\"duration_ms\":1}"'
+} > "$ZIEL/.stub/claude"
+chmod +x "$ZIEL/.stub/claude"
+A=$(lauf "$ZIEL" 1)
+pruefe "Vorpruefung besteht im fremden Repo" "=== Runde 1/1" "$A"
+
 echo
 echo "[+] Vorpruefungen"
 Z=$(neues_repo vor_dreckig)

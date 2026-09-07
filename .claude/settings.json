@@ -20,6 +20,8 @@
       "Edit(./round.md)",
       "Edit(./.mcp.json)",
       "Edit(./.gitattributes)",
+      "Edit(./.devcontainer/**)",
+      "Edit(~/.claude.json)",
       "Edit(~/.claude/**)"
     ]
   },

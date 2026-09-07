@@ -9,8 +9,8 @@ Konto. Gemessen am 07.09.2026 gegen Claude Code 2.1.263 auf Windows 11, Git Bash
 Selbst nachvollziehen:
 
 ```bash
-node --test        # 24 Tests, davon 17 Guard-Tests
-./abnahme.sh       # 34 Pruefungen der Schleifenlogik gegen einen claude-Stub
+node --test        # 36 Tests, davon 29 Guard-Tests mit 90 Einzelfaellen
+./abnahme.sh       # 39 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
 `abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
@@ -88,10 +88,12 @@ drei Fällen, darunter zwei Regressionen: `agent/maintenance` und
 `agent/20260907-domain-fix` enthalten die Zeichenfolge `main` und wurden von der
 Fassung des Konzepts fälschlich blockiert.
 
-Die Testsuite deckt darüber hinaus acht Umgehungswege ab, von denen vier in der
-Konzeptfassung funktioniert hätten: `git commit -n`,
+Die Testsuite deckt darüber hinaus jeden bekannten Umgehungsweg ab — die vier
+aus der Konzeptfassung (`git commit -n`,
 `git -c core.hooksPath=/dev/null push --force origin main`,
-`git push origin +agent/x:agent/x` und `git clean -fdx` / `git restore`.
+`git push origin +agent/x:agent/x`, `git clean -fdx`) und die neun, die ein
+adversariales Review dieser Umsetzung danach noch fand; siehe ABWEICHUNGEN
+Abschnitt E.
 
 ## 4. Selbstschutz greift — erfüllt
 
@@ -139,8 +141,18 @@ selbst wirkungslos gewesen wäre (siehe ABWEICHUNGEN B1):
 | legt 3 Tests an, löscht sie eine Runde später | `Testanzahl gesunken (27 auf 24) in Runde 2` |
 | löscht eine ganze Testdatei | `Testanzahl gesunken (24 auf 17) in Runde 2` |
 
-Die Suite bleibt in beiden Fällen grün — genau deshalb braucht es diese Bremse
-neben dem Rückgabewert der Tests.
+Und die dritte, die nach dem adversarialen Review dazukam (ABWEICHUNGEN E4):
+
+| Stub-Verhalten | gemessen |
+|---|---|
+| ändert `test/tasklist.test.js` direkt auf der Platte, an jedem Hook vorbei | `Runde 2 hat bestehende Tests geändert: test/tasklist.test.js` |
+| löscht eine ganze Testdatei | dieselbe Bremse, eine Stufe früher als der Zähler |
+
+Die Suite bleibt in allen Fällen grün — genau deshalb braucht es diese Bremsen
+neben dem Rückgabewert der Tests. Und sie sind nicht redundant: der Zähler
+fängt den Fall, den der Diff nicht sieht — eine tabellengetriebene Testdatei,
+deren Fälle aus `src/cases.js` kommen, verliert Tests, ohne dass eine Testdatei
+angefasst wird (`Testanzahl gesunken (39 auf 37)`).
 
 ## 7. Modellwahl greift — erfüllt
 
@@ -188,6 +200,17 @@ gh api -X DELETE repos/Anjo1566/agent-loop/branches/main/protection/enforce_admi
 ```
 
 ---
+
+## Umzug in ein anderes Repository
+
+Das README behauptet, der Loop lasse sich mit einer Handvoll Dateien in ein
+fremdes Repository umhängen und das Beispielprojekt sei entbehrlich. `abnahme.sh`
+prüft das jetzt, statt es zu behaupten: es baut ein Repository aus genau dieser
+Liste, legt ein Miniprojekt daneben und lässt dort die Guards und die
+Vorprüfung von `loop.sh` laufen. 30 von 30 Tests grün, Vorprüfung bestanden.
+
+Beim ersten Versuch waren es 25 von 30 — fünf Guard-Tests hingen an einer Datei
+des Beispielprojekts. Siehe ABWEICHUNGEN E11.
 
 ## Nicht gemessen
 

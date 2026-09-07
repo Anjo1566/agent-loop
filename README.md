@@ -87,6 +87,7 @@ lange dauern, ohne dass ein Kontextfenster überläuft.
 | Runde ohne neuen Commit | Stillstand |
 | zwei Runden ohne Codeänderung | der Agent dreht im Kreis |
 | Testsuite rot | eine Reparaturrunde, danach Abbruch |
+| ein versionierter Test wurde geändert | am Diff der Runde, egal auf welchem Weg |
 | Testanzahl gesunken | Verdacht auf gelöschte oder geskippte Tests |
 | Rundenlimit erreicht | Abbruch |
 | `claude` endet mit Fehler, Turn-Deckel oder Budget-Deckel | Abbruch |
@@ -108,16 +109,20 @@ nicht sprachlich — Prompts sind Bitten, Hooks sind Gesetze.
 | `.claude/`, `CLAUDE.md`, `loop.sh`, `round.md`, die Guards selbst | dieselben |
 | Geheimnisse lesen oder schreiben | Hook **und** `permissions.deny`, doppelt |
 | `--no-verify`, `git stash/clean/restore/reset --hard`, Push auf `main`, Force-Push | `guard-bash.sh` |
+| `git apply`, `patch`, `find -exec`, `npm install` — Werkzeuge, deren Ziel nicht im Befehl steht | `guard-bash.sh`, rundheraus |
 | Tests laufen im Skript, der Rückgabewert entscheidet | `loop.sh` |
 | Testanzahl darf nicht sinken | `loop.sh` |
+| kein versionierter Test wurde in der Runde geändert | `loop.sh`, am Diff |
 
 Eine neue Testdatei **anzulegen** ist erlaubt — nur eine bestehende zu ändern
 nicht. Braucht der Coder legitim eine Teständerung oder eine neue Abhängigkeit,
 ist das ein Fall für `QUESTIONS.md`: er notiert seine Empfehlung und
 überspringt die Aufgabe.
 
-`test/guards.test.js` prüft all das bei jedem Testlauf — 17 Fälle, inklusive
-der Umgehungswege. Die Guards sind das Einzige, was den Loop davon abhält,
+`test/guards.test.js` prüft all das bei jedem Testlauf, und
+`test/guards-regression.test.js` prüft zusätzlich jeden Umgehungsweg, der in
+einem adversarialen Review dieses Repositories tatsächlich funktioniert hat —
+zusammen 29 Tests mit 90 Einzelfällen. Die Guards sind das Einzige, was den Loop davon abhält,
 seinen eigenen Erfolg zu fälschen; ein Guard, der still aufhört zu wirken, sieht
 von aussen aus wie ein Guard, der wirkt. Deshalb prüft `loop.sh` vor der ersten
 Runde zusätzlich mit einem fingierten Payload nach, dass beide Guards wirklich
@@ -127,8 +132,8 @@ läuft nur ins Leere.
 ## Prüfen, ohne Kontingent zu verbrennen
 
 ```bash
-node --test     # 24 Tests, davon 17 fuer die Guards
-./abnahme.sh    # 34 Pruefungen der Schleifenlogik gegen einen claude-Stub
+node --test     # 36 Tests, davon 29 fuer die Guards
+./abnahme.sh    # 39 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
 `abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
@@ -151,8 +156,9 @@ jeder Änderung an `loop.sh` einmal laufen lassen.
 5. `./loop.sh 1` als Trockenlauf.
 
 `src/tasklist.js` und seine Tests sind nur das Beispielprojekt, an dem der Loop
-hier arbeitet — die kannst du weglassen. `test/guards.test.js` und `abnahme.sh`
-solltest du mitnehmen; beide hängen nicht am Beispielprojekt.
+hier arbeitet — die kannst du weglassen. `test/guards.test.js`,
+`test/guards-regression.test.js` und `abnahme.sh` solltest du mitnehmen; die
+hängen nicht am Beispielprojekt.
 
 ## Was hier bewusst fehlt
 
