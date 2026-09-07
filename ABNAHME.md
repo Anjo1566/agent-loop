@@ -1,8 +1,10 @@
 # Abnahme
 
 Die acht Punkte aus Abschnitt 11 des Konzepts, jeder mit dem Beleg, der ihn
-nachweist. Gemessen am 07.09.2026 gegen Claude Code 2.1.263 auf Windows 11,
-Git Bash 5.2.37, Node 22.16.0, jq 1.8.2, gh 2.97.0.
+nachweist. Alle acht sind erfüllt; Punkt 8 allerdings erst, seit das Repository
+öffentlich angelegt ist — privat verweigert GitHub den Branch-Schutz auf diesem
+Konto. Gemessen am 07.09.2026 gegen Claude Code 2.1.263 auf Windows 11, Git Bash
+5.2.37, Node 22.16.0, jq 1.8.2, gh 2.97.0.
 
 Selbst nachvollziehen:
 
@@ -154,27 +156,36 @@ nicht ab, sondern fällt still auf das Kontomodell zurück — auf einem Max-Abo
 also auf Opus. Ohne die Prüfung in `loop.sh` würde ein Tippfehler des Agenten
 den Rest des Laufs auf Opus verbrennen.
 
-## 8. Branch-Schutz greift — **nicht erfüllt**
+## 8. Branch-Schutz greift — erfüllt
 
-Nicht prüfbar auf diesem Konto:
+Das Repository ist öffentlich (`Anjo1566/agent-loop`), damit ist der Branch-Schutz
+auf diesem Konto verfügbar. Aktiviert mit Pflicht zum Pull Request **und**
+`enforce_admins` — ohne das dürfte der Eigentümer den Schutz umgehen und der
+Nachweis wäre wertlos.
+
+Gegenprobe, direkter Push auf `main`:
 
 ```
-gh api repos/Anjo1566/<repo>/branches/main/protection
-HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this feature.
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - Changes must be made through a pull request.
+ ! [remote rejected] main -> main (protected branch hook declined)
+PUSH_EXIT=1
 ```
 
-Dasselbe für den `rulesets`-Endpunkt. `gh api user --jq .plan.name` liefert
-`null`; 16 der 17 Repositories des Kontos sind privat.
+Damit greifen beide Schichten unabhängig voneinander: `guard-bash.sh` fängt den
+Versuch schon im Agenten ab (Punkt 3), und wenn der Hook je umgangen wird, weist
+GitHub den Push trotzdem zurück. Genau das meint das Konzept mit »Der Hook ist
+über einen direkten Pfad umgehbar, der Branch-Schutz nicht«.
 
-Das Konzept nennt den Branch-Schutz »Pflicht, nicht optional« und erklärt
-`guard-bash.sh` ausdrücklich für unzureichend, weil sie über einen direkten Pfad
-umgehbar ist. Solange dieser Punkt offen ist, ist der Schutz von `main` eine
-Schicht dünner als vorgesehen. Wege: Repository öffentlich machen (laut
-Fehlermeldung genügt das), GitHub Pro, oder die Lücke bewusst tragen.
+Offen bleibt der zweite Punkt aus Abschnitt 3 des Konzepts: das hinterlegte
+Token hat den Scope `repo` und damit Schreibrecht auf alle Repositories des
+Kontos, nicht nur auf dieses eine. Siehe ABWEICHUNGEN C2.
 
-Zweiter offener Punkt derselben Art: das hinterlegte Token hat den Scope `repo`
-und damit Schreibrecht auf alle Repositories des Kontos, nicht nur auf dieses
-eine. Siehe ABWEICHUNGEN C1 und C2.
+Zurücknehmen, falls der Schutz beim normalen Arbeiten stört:
+
+```bash
+gh api -X DELETE repos/Anjo1566/agent-loop/branches/main/protection/enforce_admins
+```
 
 ---
 

@@ -219,18 +219,22 @@ plus `!/.agents/hooks/`.
 
 ## C. Was nicht erfüllt werden konnte
 
-### C1 — Branch-Schutz für `main` (Abnahmepunkt 8)
+### C1 — Branch-Schutz für `main` (Abnahmepunkt 8) — nachträglich gelöst
 
-Das Konzept nennt ihn »Pflicht, nicht optional«. Auf diesem GitHub-Konto ist er
-für private Repositories nicht verfügbar:
-`gh api repos/.../branches/main/protection` antwortet mit HTTP 403 »Upgrade to
+Das Konzept nennt ihn »Pflicht, nicht optional«. Auf privaten Repositories dieses
+Kontos ist er nicht verfügbar:
+`gh api repos/.../branches/main/protection` antwortete mit HTTP 403 »Upgrade to
 GitHub Pro or make this repository public to enable this feature«.
 
-Drei Wege: das Repository öffentlich machen (laut Fehlermeldung reicht das),
-GitHub Pro, oder bewusst ohne Branch-Schutz laufen. Ohne ihn ist `guard-bash.sh`
-die einzige Sperre gegen einen Push auf `main` — und das Konzept selbst nennt
-sie ausdrücklich für unzureichend, weil sie über einen direkten Pfad umgehbar
-ist.
+Gelöst, indem `Anjo1566/agent-loop` **öffentlich** angelegt wurde. Der Schutz ist
+mit Pflicht zum Pull Request und `enforce_admins` aktiv; ein direkter Push auf
+`main` wird von GitHub mit `GH006 — Changes must be made through a pull request`
+abgewiesen, auch für den Eigentümer. Beleg in ABNAHME.md, Punkt 8.
+
+Wer das Repository privat braucht, hat weiterhin nur die Wahl zwischen GitHub Pro
+und dem bewussten Verzicht — und dann ist `guard-bash.sh` die einzige Sperre
+gegen einen Push auf `main`, die das Konzept selbst ausdrücklich für
+unzureichend erklärt.
 
 ### C2 — Repository-gebundenes Token
 

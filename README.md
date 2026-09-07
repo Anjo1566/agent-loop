@@ -6,8 +6,7 @@ Pull Request.
 
 Umsetzung von `konzept.md`. Was davon abweicht und warum, steht vollständig in
 [ABWEICHUNGEN.md](ABWEICHUNGEN.md); die acht Abnahmepunkte mit ihren Belegen in
-[ABNAHME.md](ABNAHME.md) — sieben erfüllt, einer nicht (Branch-Schutz, siehe
-dort).
+[ABNAHME.md](ABNAHME.md) — alle acht erfüllt.
 
 | Rolle | technisch | Aufgabe |
 |---|---|---|
@@ -34,9 +33,11 @@ Meldung sagt jeweils, was.
 - `jq`, `gh`, `git`, `node` ≥ 20, `claude`
 - `gh auth login`
 - ein sauberes Arbeitsverzeichnis auf `main`
-- **Branch-Schutz für `main`** — siehe ABWEICHUNGEN.md, Punkt C1. Auf diesem
-  Konto ist er für private Repositories gesperrt. Ohne ihn hängt der Schutz von
+- **Branch-Schutz für `main`** — hier aktiv, mit Pflicht zum Pull Request und
+  `enforce_admins`. Das ist der Grund, warum dieses Repository öffentlich ist:
+  privat verlangt GitHub dafür Pro. Ohne Branch-Schutz hängt der Schutz von
   `main` allein an `guard-bash.sh`, und die ist umgehbar.
+  Zurücknehmen: `gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/enforce_admins`
 
 Auf Windows läuft alles direkt in der Git Bash; Claude Code führt auch die Hooks
 darüber aus. Der Container in `.devcontainer/` ist die eigentlich vorgesehene
