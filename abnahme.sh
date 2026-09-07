@@ -10,6 +10,15 @@ set -uo pipefail
 QUELLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASIS="${TMPDIR:-/tmp}/agent-loop-abnahme"
 
+# Geprueft wird der committete Stand, denn jedes Szenario klont das Repository --
+# genau wie ein frischer Klon ihn bekaeme. Offene Aenderungen sind unsichtbar, und
+# das hat schon einmal eine halbe Stunde Suche gekostet.
+if [[ -n "$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" status --porcelain 2>/dev/null)" ]]; then
+  echo "Hinweis: das Arbeitsverzeichnis hat offene Aenderungen."
+  echo "         Geprueft wird der committete Stand, nicht diese Aenderungen."
+  echo
+fi
+
 command -v jq   >/dev/null || { echo "jq fehlt."; exit 1; }
 command -v node >/dev/null || { echo "node fehlt."; exit 1; }
 command -v git  >/dev/null || { echo "git fehlt."; exit 1; }
@@ -76,6 +85,11 @@ RUNDE=$(( $(cat .stub/runde 2>/dev/null || echo 0) + 1 ))
 echo "$RUNDE" > .stub/runde
 echo "runde=$RUNDE model=$MODELL effort=$AUFWAND" >> .stub/aufrufe
 if [[ -f .stub/aktion ]]; then . .stub/aktion; fi
+# Bei stream-json erwartet loop.sh mehrere Zeilen, die letzte davon das Ergebnis.
+if [[ "${AGENT_LOOP_EVENTS:-0}" == "1" ]]; then
+  printf '%s\n' '{"type":"system","subtype":"init","model":"stub"}'
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"stub"}]}}'
+fi
 printf '{"type":"result","subtype":"success","is_error":false,"duration_ms":42,"result":"stub"}\n'
 STUB
   chmod +x "$ziel/.stub/claude"
@@ -246,7 +260,15 @@ git commit -q -m "stub round $RUNDE" >/dev/null 2>&1
 A
 A=$(lauf "$Z" 5)
 pruefe "gesunkene Testanzahl erkannt" "Testanzahl gesunken" "$A"
-pruefe "ohne dass ein Test angefasst wurde" "39 auf 37" "$A"
+# Die Zahlen selbst haengen davon ab, wie viele Tests das Repo gerade hat -- also
+# nicht festnageln, sondern pruefen, dass die zweite kleiner ist als die erste.
+VORHER_NACHHER=$(grep -o 'Testanzahl gesunken ([0-9]* auf [0-9]*)' <<< "$A" | grep -o '[0-9]*' | tr '\n' ' ')
+set -- $VORHER_NACHHER
+if [[ -n "${1:-}" && -n "${2:-}" ]] && (( $2 < $1 )); then
+  pruefe "und die Zahl ist wirklich gefallen" "ok" "ok"
+else
+  pruefe "und die Zahl ist wirklich gefallen" "ok" "gemessen: ${VORHER_NACHHER:-nichts}"
+fi
 nicht  "keine vierte Runde"           "=== Runde 4/5"       "$A"
 
 # Eine geloeschte Testdatei laesst die Suite gruen. Sie faellt jetzt schon eine
@@ -285,6 +307,17 @@ nicht  "keine dritte Runde"                  "=== Runde 3/5"                  "$
 # Das README nennt eine Liste von Dateien fuer den Umzug in ein anderes Repo und
 # behauptet, das Beispielprojekt sei entbehrlich. Hier wird genau diese Liste
 # gebaut -- nichts sonst -- und geprueft, ob Guards und Vorpruefung dort laufen.
+# Der Ereignisstrom fuers Cockpit darf am Ablauf nichts aendern.
+echo
+echo "[+] Ereignisstrom"
+Z=$(neues_repo ereignisse)
+printf '%s' "$AKTION_NORMAL" > "$Z/.stub/aktion"
+A=$( cd "$Z" && AGENT_LOOP_EVENTS=1 PATH="$PWD/.stub:$PATH" bash loop.sh 1 2>&1 )
+pruefe "Lauf mit Ereignisstrom laeuft durch" "Rundenlimit 1 erreicht" "$A"
+pruefe "Strom wurde geschrieben"             "assistant"              "$(cat "$Z/.agents/round-1.ndjson" 2>/dev/null)"
+pruefe "Ergebnis herausgeloest"              "duration_ms"            "$(cat "$Z/.agents/round-1.json" 2>/dev/null)"
+pruefe "Dauer daraus gelesen"                "| 42ms"                 "$A"
+
 echo
 echo "[+] Umzug in ein fremdes Repo"
 ZIEL="$BASIS/umzug"

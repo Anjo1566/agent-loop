@@ -151,18 +151,36 @@ for ((i=1; i<=MAX; i++)); do
   VORHER="$(git rev-parse HEAD)"
   echo "=== Runde $i/$MAX — $MODELL / $AUFWAND ==="
 
-  # --verbose würde die JSON-Ausgabe in ein Array verwandeln und jeden jq-Lesen
-  # unten brechen. --bare würde Hooks, Subagents und CLAUDE.md abschalten,
-  # also genau die Schutzmechanismen. Beides gehört hier niemals hin.
+  # Mit AGENT_LOOP_EVENTS=1 schreibt die Runde einen Ereignisstrom: eine
+  # JSON-Zeile je Ereignis, live mitlesbar, während die Runde noch läuft. Das
+  # Cockpit braucht das; am Terminal ist es überflüssig. Die letzte Zeile des
+  # Stroms ist dasselbe result-Objekt wie bei --output-format json, deshalb
+  # ändert sich an allen Auswertungen unten nichts.
+  #
+  # --verbose ist dabei Pflicht (Claude Code verweigert stream-json sonst) und
+  # unschädlich; nur bei --output-format json würde es die Ausgabe in ein Array
+  # verwandeln und jeden jq-Zugriff brechen. --bare gehört hier nie hin: es
+  # schaltet Hooks, Subagents und CLAUDE.md ab, also genau die Schutzmechanismen.
+  AUSGABE=(--output-format json)
+  ZIEL=".agents/round-$i.json"
+  if [[ "${AGENT_LOOP_EVENTS:-0}" == "1" ]]; then
+    AUSGABE=(--output-format stream-json --verbose)
+    ZIEL=".agents/round-$i.ndjson"
+  fi
+
   RUNDE_RC=0
   claude -p "$(cat round.md)" \
         --model "$MODELL" --effort "$AUFWAND" \
         --max-turns "$MAX_TURNS" \
         --max-budget-usd "$MAX_BUDGET_USD" \
-        --output-format json \
+        "${AUSGABE[@]}" \
         --dangerously-skip-permissions \
         --allowedTools "Read,Write,Edit,Bash,Glob,Grep,Agent" \
-        < /dev/null > ".agents/round-$i.json" || RUNDE_RC=$?
+        < /dev/null > "$ZIEL" || RUNDE_RC=$?
+
+  if [[ "$ZIEL" == *.ndjson ]]; then
+    jq -c 'select(.type=="result")' "$ZIEL" 2>/dev/null | tail -1 > ".agents/round-$i.json"
+  fi
 
   DAUER=$(jq -r '.duration_ms // "?"' ".agents/round-$i.json" 2>/dev/null || echo "?")
   echo "Runde $i | $MODELL | $AUFWAND | ${DAUER}ms" >> .agents/run.log
