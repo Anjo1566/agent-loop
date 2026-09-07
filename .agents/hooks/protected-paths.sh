@@ -20,7 +20,7 @@ MUSTER_DEPS='((^|/)package(-lock)?\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.[a-z]
 
 # Die eigene Konfiguration und die Schutzmechanismen selbst. Ohne diese Regel
 # schaltet eine Prompt-Injection über Repo-Inhalte die Guards einfach ab.
-MUSTER_SELBST='((^|/)\.claude/|(^|/)CLAUDE\.md$|(^|/)\.agents/hooks/|(^|/)loop\.sh$|(^|/)round\.md$|(^|/)\.mcp\.json$|(^|/)\.gitattributes$)'
+MUSTER_SELBST='((^|/)\.claude/|(^|/)CLAUDE\.md$|(^|/)\.agents/hooks/|(^|/)loop\.sh$|(^|/)abnahme\.sh$|(^|/)round\.md$|(^|/)\.mcp\.json$|(^|/)\.gitattributes$)'
 
 # Geheimnisse.
 MUSTER_GEHEIM='((^|/)\.env(\.[^/]*)?$|(^|/)id_rsa|(^|/)id_ed25519|\.pem$|\.key$|(^|/)credentials(\.[^/]*)?$|(^|/)\.ssh/|(^|/)\.aws/|(^|/)\.npmrc$|(^|/)\.netrc$)'

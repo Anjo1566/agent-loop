@@ -16,6 +16,7 @@
       "Edit(./CLAUDE.md)",
       "Edit(./.agents/hooks/**)",
       "Edit(./loop.sh)",
+      "Edit(./abnahme.sh)",
       "Edit(./round.md)",
       "Edit(./.mcp.json)",
       "Edit(./.gitattributes)",

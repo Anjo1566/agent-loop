@@ -5,8 +5,9 @@ Terminal, ein Pull Request am Ende. Du greifst genau einmal ein: du prüfst den
 Pull Request.
 
 Umsetzung von `konzept.md`. Was davon abweicht und warum, steht vollständig in
-[ABWEICHUNGEN.md](ABWEICHUNGEN.md) — dort stehen auch die zwei Punkte, die auf
-diesem Konto **nicht** erfüllt werden konnten.
+[ABWEICHUNGEN.md](ABWEICHUNGEN.md); die acht Abnahmepunkte mit ihren Belegen in
+[ABNAHME.md](ABNAHME.md) — sieben erfüllt, einer nicht (Branch-Schutz, siehe
+dort).
 
 | Rolle | technisch | Aufgabe |
 |---|---|---|
@@ -117,7 +118,23 @@ ist das ein Fall für `QUESTIONS.md`: er notiert seine Empfehlung und
 `test/guards.test.js` prüft all das bei jedem Testlauf — 17 Fälle, inklusive
 der Umgehungswege. Die Guards sind das Einzige, was den Loop davon abhält,
 seinen eigenen Erfolg zu fälschen; ein Guard, der still aufhört zu wirken, sieht
-von aussen aus wie ein Guard, der wirkt.
+von aussen aus wie ein Guard, der wirkt. Deshalb prüft `loop.sh` vor der ersten
+Runde zusätzlich mit einem fingierten Payload nach, dass beide Guards wirklich
+Exit 2 liefern — ein fehlendes oder stumpfes Skript blockiert **nicht**, es
+läuft nur ins Leere.
+
+## Prüfen, ohne Kontingent zu verbrennen
+
+```bash
+node --test     # 24 Tests, davon 17 fuer die Guards
+./abnahme.sh    # 34 Pruefungen der Schleifenlogik gegen einen claude-Stub
+```
+
+`abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
+nachspielt, das die jeweilige Bedingung provozieren soll: rote Suite,
+gelöschte Tests, Stillstand, Müll in `next-round.json`, aufgebrauchte
+Opus-Eskalationen. Läuft in ein paar Minuten durch und kostet nichts. Nach
+jeder Änderung an `loop.sh` einmal laufen lassen.
 
 ## Auf ein anderes Projekt umhängen
 
@@ -133,8 +150,8 @@ von aussen aus wie ein Guard, der wirkt.
 5. `./loop.sh 1` als Trockenlauf.
 
 `src/tasklist.js` und seine Tests sind nur das Beispielprojekt, an dem der Loop
-hier arbeitet — die kannst du weglassen. `test/guards.test.js` solltest du
-mitnehmen.
+hier arbeitet — die kannst du weglassen. `test/guards.test.js` und `abnahme.sh`
+solltest du mitnehmen; beide hängen nicht am Beispielprojekt.
 
 ## Was hier bewusst fehlt
 
