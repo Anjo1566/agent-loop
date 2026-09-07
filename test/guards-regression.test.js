@@ -16,6 +16,9 @@ const path = require('node:path')
 
 const REPO = path.resolve(__dirname, '..')
 const HOOKS = path.join(REPO, '.agents', 'hooks')
+// This file itself: a tracked test file that travels with these tests, so they
+// keep working after the example project is removed.
+const EXISTING_TEST_REL = path.relative(REPO, __filename).replace(/\\/g, '/')
 
 function runGuard (script, payload, cwd = REPO) {
   const result = spawnSync('bash', [path.join(HOOKS, script)], {
@@ -44,10 +47,10 @@ function allows (guard, payload, why) {
 test('a wrapping shell, quotes or parentheses do not hide the command', () => {
   // The word boundary carried no quote and no paren, so one `bash -c` in front
   // of any blocked command turned the entire path check off.
-  blocks('guard-bash.sh', bashCall('bash -c "sed -i 1d test/tasklist.test.js"'), 'bash -c wrapper')
-  blocks('guard-bash.sh', bashCall("sh -c 'sed -i 1d test/tasklist.test.js'"), 'sh -c wrapper')
-  blocks('guard-bash.sh', bashCall('(sed -i 1d test/tasklist.test.js)'), 'subshell')
-  blocks('guard-bash.sh', bashCall('"sed" -i 1d test/tasklist.test.js'), 'quoted verb')
+  blocks('guard-bash.sh', bashCall(`bash -c "sed -i 1d ${EXISTING_TEST_REL}"`), 'bash -c wrapper')
+  blocks('guard-bash.sh', bashCall(`sh -c 'sed -i 1d ${EXISTING_TEST_REL}'`), 'sh -c wrapper')
+  blocks('guard-bash.sh', bashCall(`(sed -i 1d ${EXISTING_TEST_REL})`), 'subshell')
+  blocks('guard-bash.sh', bashCall(`"sed" -i 1d ${EXISTING_TEST_REL}`), 'quoted verb')
 })
 
 test('globs are resolved the way the shell will resolve them', () => {
@@ -93,17 +96,17 @@ test('a push must name the agent branch explicitly', () => {
 test('the coder can still narrow down a failing test', () => {
   // Interpreters were treated as writers unconditionally, so running a single
   // test file — the first thing anyone does with a red suite — was blocked.
-  allows('guard-bash.sh', bashCall('node --test test/tasklist.test.js'), 'one test file')
+  allows('guard-bash.sh', bashCall(`node --test ${EXISTING_TEST_REL}`), 'one test file')
   allows('guard-bash.sh', bashCall('python -m pytest tests/test_api.py -k foo'), 'one pytest file')
-  allows('guard-bash.sh', bashCall('sed -n 1,5p test/tasklist.test.js'), 'sed without -i')
+  allows('guard-bash.sh', bashCall(`sed -n 1,5p ${EXISTING_TEST_REL}`), 'sed without -i')
 })
 
 test('redirecting stderr is not a write', () => {
   // A bare `>` matched anywhere in the line, so 2>/dev/null and 2>&1 counted as
   // writes and blocked read-only inspection — including the reviewer's own job.
-  allows('guard-bash.sh', bashCall('grep -n assert test/tasklist.test.js 2>/dev/null'), '2>/dev/null')
+  allows('guard-bash.sh', bashCall(`grep -n assert ${EXISTING_TEST_REL} 2>/dev/null`), '2>/dev/null')
   allows('guard-bash.sh', bashCall('node --test 2>&1 | tail -20'), '2>&1')
-  allows('guard-bash.sh', bashCall('git diff -- test/tasklist.test.js > /tmp/d.diff'), 'unprotected target')
+  allows('guard-bash.sh', bashCall(`git diff -- ${EXISTING_TEST_REL} > /tmp/d.diff`), 'unprotected target')
   allows('guard-bash.sh', bashCall('cat package.json | jq -r .version > /tmp/v'), 'read a manifest')
 })
 
@@ -112,16 +115,16 @@ test('both guards agree about what counts as a new test file', () => {
   // guard allowed a new test, the bash guard refused the same creation.
   allows('guard-bash.sh', bashCall('touch test/brand-new.test.js'), 'touch a new test')
   allows('guard-bash.sh', bashCall('echo x > test/brand-new.test.js'), 'redirect into a new test')
-  blocks('guard-bash.sh', bashCall('echo x > test/tasklist.test.js'), 'redirect over an existing test')
+  blocks('guard-bash.sh', bashCall(`echo x > ${EXISTING_TEST_REL}`), 'redirect over an existing test')
 })
 
 test('"existing" means tracked by git, not present on disk', () => {
   // Otherwise delete-then-write defeats the rule, and both brakes in loop.sh
   // stay silent: the suite is green and the test count is unchanged.
-  const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', 'test/tasklist.test.js'],
+  const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', EXISTING_TEST_REL],
     { cwd: REPO, encoding: 'utf8' })
   assert.equal(tracked.status, 0, 'fixture must be a tracked file')
-  blocks('guard-files.sh', fileCall('Write', path.join(REPO, 'test', 'tasklist.test.js')), 'tracked test')
+  blocks('guard-files.sh', fileCall('Write', __filename), 'tracked test')
 })
 
 test('the config file and the container are protected too', () => {
@@ -146,7 +149,7 @@ test('relative paths resolve against the project, not the working directory', ()
   // Hooks run in the session's working directory. With a cwd-relative
   // existence check, one `cd` turned the test protection off silently.
   const { code } = runGuard('guard-files.sh',
-    fileCall('Write', 'test/tasklist.test.js'),
+    fileCall('Write', EXISTING_TEST_REL),
     path.join(REPO, 'src'))
   assert.equal(code, 2, `expected exit 2 from a subdirectory, got ${code}`)
 })

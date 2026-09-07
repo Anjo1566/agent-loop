@@ -278,6 +278,40 @@ pruefe "geaenderter Test faellt am Diff auf" "hat bestehende Tests ge" "$A"
 pruefe "Datei wird genannt"                  "test/tasklist.test.js"          "$A"
 nicht  "keine dritte Runde"                  "=== Runde 3/5"                  "$A"
 
+# Das README nennt eine Liste von Dateien fuer den Umzug in ein anderes Repo und
+# behauptet, das Beispielprojekt sei entbehrlich. Hier wird genau diese Liste
+# gebaut -- nichts sonst -- und geprueft, ob Guards und Vorpruefung dort laufen.
+echo
+echo "[+] Umzug in ein fremdes Repo"
+ZIEL="$BASIS/umzug"
+rm -rf "$ZIEL"; mkdir -p "$ZIEL/test" "$ZIEL/src"
+for D in CLAUDE.md round.md loop.sh TASKS.md STATUS.md QUESTIONS.md \
+         .gitattributes .gitignore abnahme.sh; do cp "$QUELLE/$D" "$ZIEL/"; done
+cp -r "$QUELLE/.agents" "$QUELLE/.claude" "$ZIEL/"
+cp "$QUELLE/test/guards.test.js" "$QUELLE/test/guards-regression.test.js" "$ZIEL/test/"
+echo 'module.exports = (a, b) => a + b' > "$ZIEL/src/add.js"
+{ echo "const t = require('node:test')"
+  echo "const a = require('node:assert/strict')"
+  echo "t('adds', () => { a.equal(require('../src/add.js')(2, 2), 4) })"
+} > "$ZIEL/test/add.test.js"
+( cd "$ZIEL"
+  git init -q -b main
+  git config user.name Abnahme
+  git config user.email abnahme@example.invalid
+  git add -A >/dev/null
+  git update-index --chmod=+x .agents/hooks/*.sh loop.sh abnahme.sh
+  git commit -qm "initial" )
+A=$( cd "$ZIEL" && node --test --test-reporter=tap 2>&1 )
+pruefe "Guards laufen ohne das Beispielprojekt" "# fail 0" "$A"
+mkdir -p "$ZIEL/.stub"
+echo ".stub/" >> "$ZIEL/.git/info/exclude"
+{ echo '#!/usr/bin/env bash'
+  echo 'echo "{\"type\":\"result\",\"is_error\":false,\"duration_ms\":1}"'
+} > "$ZIEL/.stub/claude"
+chmod +x "$ZIEL/.stub/claude"
+A=$(lauf "$ZIEL" 1)
+pruefe "Vorpruefung besteht im fremden Repo" "=== Runde 1/1" "$A"
+
 echo
 echo "[+] Vorpruefungen"
 Z=$(neues_repo vor_dreckig)

@@ -133,7 +133,7 @@ läuft nur ins Leere.
 
 ```bash
 node --test     # 36 Tests, davon 29 fuer die Guards
-./abnahme.sh    # 37 Pruefungen der Schleifenlogik gegen einen claude-Stub
+./abnahme.sh    # 39 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
 `abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
