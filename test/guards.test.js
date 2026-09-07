@@ -24,7 +24,10 @@ function runGuard (script, payload) {
   const result = spawnSync('bash', [path.join(HOOKS, script)], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    cwd: REPO
+    cwd: REPO,
+    // The hook runner exports this; the guards resolve relative paths against
+    // it rather than against their own working directory.
+    env: { ...process.env, CLAUDE_PROJECT_DIR: REPO }
   })
   if (result.error) throw result.error
   return { code: result.status, stderr: result.stderr }

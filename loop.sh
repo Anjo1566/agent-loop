@@ -43,9 +43,13 @@ git rev-parse HEAD >/dev/null 2>&1 || fehler "Das Repository hat noch keinen Com
 jq -e . .claude/settings.json >/dev/null 2>&1 \
   || fehler ".claude/settings.json ist kein gültiges JSON. Ohne sie laufen beide Guards nicht."
 
-for H in guard-files guard-bash; do
+for H in guard-files guard-bash protected-paths; do
   [[ -r ".agents/hooks/$H.sh" ]] || fehler ".agents/hooks/$H.sh fehlt oder ist nicht lesbar."
 done
+
+# Dieselben Muster wie die Guards. Sie werden unten am Diff der Runde gebraucht.
+# shellcheck source=.agents/hooks/protected-paths.sh
+. ./.agents/hooks/protected-paths.sh || fehler "Die Pfadmuster liessen sich nicht laden."
 
 # Rauchtest: ein fingierter Payload muss Exit 2 liefern. Ein Guard, der 126
 # oder 127 liefert (Datei weg, Interpreter weg, jq weg), blockiert NICHT —
@@ -199,6 +203,19 @@ for ((i=1; i<=MAX; i++)); do
     fi
   else
     LEERRUNDEN=0
+  fi
+
+  # Ein Hook sieht nur, was in der Kommandozeile steht. Ein Diff-Applizierer,
+  # ein Shell-Skript oder ein Umweg über eine Alias-Datei tragen ihr Ziel
+  # woanders. Die Aufzählung von Werkzeugen in guard-bash.sh wird deshalb nie
+  # vollständig sein — hier urteilt das Skript am Ergebnis statt an der
+  # Absicht: kein versionierter Test darf sich in dieser Runde geändert haben.
+  # Neue Tests sind erlaubt, deshalb nur M/D/R und nicht A.
+  ANGEFASSTE_TESTS=$(git diff --name-only --diff-filter=MDR "$VORHER" HEAD \
+                     | grep -iE "$MUSTER_TESTS" || true)
+  if [[ -n "$ANGEFASSTE_TESTS" ]]; then
+    GRUND="Runde $i hat bestehende Tests geändert: $(tr '\n' ' ' <<< "$ANGEFASSTE_TESTS")"
+    break
   fi
 
   if ! bash -c "$TESTBEFEHL" > .agents/testrun.txt 2>&1; then

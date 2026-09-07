@@ -313,3 +313,121 @@ Zum Umhängen auf ein anderes Projekt siehe README.
   `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, statt beide zu leeren — dann gilt aber
   auch keine Frontmatter-Angabe mehr. Hier ist es beim Leeren geblieben, wie im
   Konzept.
+
+---
+
+## E. Was ein adversariales Review danach noch fand
+
+Die Fassung aus den Abschnitten A bis D wurde anschliessend von unabhängigen
+Prüfern angegriffen, mit der Aufgabe, die Guards zu brechen. Sie fanden
+sechzehn Punkte, alle mit reproduzierbarem Befehl, alle nachgestellt und
+behoben. `test/guards-regression.test.js` hält jeden einzelnen fest — sie sind
+im Betrieb unsichtbar, und ein Guard, der aufgehört hat zu wirken, sieht von
+aussen aus wie einer, der wirkt.
+
+### E1 — Ein vorangestelltes `bash -c` schaltete die halbe Prüfung ab
+
+Die linke Wortgrenze der schreibenden Befehle war
+`(^|[;&|[:space:]])` — ohne Anführungszeichen und ohne Klammern. Damit traf
+`bash -c "sed -i 1d test/x.test.js"` kein einziges Muster, und der gesamte
+Pfadcheck wurde übersprungen. Dasselbe für `sh -c '...'`, `(sed ...)` und
+`"sed" ...`. Die rechte Wortgrenze hatte denselben Fehler.
+**Änderung:** beide Grenzen enthalten jetzt Anführungszeichen, Klammern und
+Backticks.
+
+### E2 — Ein Glob mit einem Zeichen umging jedes am Dateinamen verankerte Muster
+
+`rm loop.s?` und `sed -i 1d loop.s[h]` schreiben loop.sh, treffen aber
+`loop\.sh$` nicht, weil der Guard das unexpandierte Token sieht.
+**Änderung:** Tokens mit Glob-Zeichen werden zusätzlich expandiert — reine
+Dateinamenserweiterung, es wird nichts ausgeführt — und zusätzlich ohne
+Glob-Zeichen geprüft, falls die Datei noch nicht existiert. Der Guard sieht
+damit, was die Shell sehen wird.
+
+### E3 — `git apply` und `patch` tragen ihr Ziel im Diff
+
+Beide schreiben beliebige Dateien, ohne einen Pfad auf der Kommandozeile zu
+nennen. Ein Token-Check kann sie prinzipiell nicht prüfen. Reproduziert: eine
+bestehende Testdatei wurde damit in Ort und Stelle abgeschwächt, ohne dass eine
+der beiden Bremsen ansprang — Suite grün, Testanzahl unverändert.
+**Änderung:** `patch`, `git apply`, `git am`, `git checkout-index` und
+`find -delete` / `-exec` werden rundheraus abgelehnt statt analysiert. Der
+Coder hat für legitime Änderungen das Edit-Werkzeug.
+
+### E4 — Und weil auch das nie vollständig sein wird: eine Prüfung am Ergebnis
+
+Die drei Befunde oben haben dieselbe Wurzel: ein Hook sieht nur die Absicht,
+die in der Kommandozeile steht. Die Aufzählung von Werkzeugen wird deshalb nie
+fertig. `loop.sh` prüft jetzt nach jeder Runde am Diff, ob eine **versionierte**
+Testdatei geändert, gelöscht oder umbenannt wurde, und bricht dann ab. Das
+fängt alle Shell-Wege auf einmal — auch die, die niemand aufgezählt hat.
+
+Damit ist die Rollenverteilung sauber: der Guard ist die schnelle Rückmeldung
+ans Modell, das Skript ist die Zusage. Das ist genau Prinzip 4 des Konzepts,
+»Das Skript urteilt, nicht der Agent«.
+
+### E5 — Löschen, dann neu schreiben
+
+Die Regel »nur bestehende Testdateien sind gesperrt« hing an `[[ -e "$PFAD" ]]`.
+Sobald die Datei weg war, war das Schreiben erlaubt. `find … -delete` kam am
+Bash-Guard vorbei, weil `find` nicht auf der Liste stand.
+**Änderung:** massgeblich ist jetzt, ob **Git** die Datei kennt
+(`git ls-files --error-unmatch`), nicht ob sie auf der Platte liegt. Eine
+gelöschte, aber versionierte Datei bleibt gesperrt.
+
+### E6 — Ein Symlink oder eine Windows-Junction hebelte jedes Muster aus
+
+`mklink /J cfg .claude` — und `cfg/settings.json` traf kein Muster mehr,
+schrieb aber in `.claude/settings.json`. Genau das Szenario, das
+`protected-paths.sh` in seinem eigenen Kommentar nennt.
+**Änderung:** `guard-files.sh` kanonisiert den Pfad mit `readlink -f` und prüft
+den aufgelösten Pfad zusätzlich. Auf Windows zeigt `readlink` dabei
+gelegentlich auf einen anderen Mount-Alias (`/tmp` statt
+`/c/Users/…/Temp`), deshalb wird sowohl die gekürzte als auch die ungekürzte
+Form geprüft — und Git bekommt weiterhin den projektrelativen Pfad, sonst
+ordnet es die Datei dem Repository nicht zu und meldet fälschlich »neu«.
+
+### E7 — Der Pfad wurde gegen das falsche Verzeichnis aufgelöst
+
+`[[ -e "$PFAD" ]]` löste relative Pfade gegen das Arbeitsverzeichnis des
+Hook-Prozesses auf. Derselbe Payload wurde aus dem Repositorywurzelverzeichnis
+blockiert und aus `src/` durchgelassen — die Regel schaltete sich bei einem
+`cd` still ab. Abweichung A7 hatte das für den Hook-**Befehl** korrigiert, für
+die Prüfung darin aber nicht.
+**Änderung:** relative Pfade werden gegen `$CLAUDE_PROJECT_DIR` aufgelöst.
+
+### E8 — Vier weitere Löcher im Bash-Guard
+
+| Umgehung | vorher | jetzt |
+|---|---|---|
+| `git push` ohne Refspec, auf `main` stehend | ging durch | blockiert, eine Refspec ist Pflicht |
+| `git push origin HEAD` | ging durch | blockiert |
+| `git push -fu` (f nicht am Ende des Flag-Bündels) | ging durch | blockiert |
+| `npm pkg set`, `npm install`, `yarn add`, `npx` | ging durch, schreibt package.json ungenannt | blockiert |
+
+### E9 — Zwei unbewachte Dateien
+
+`~/.claude.json` war von keiner Schicht geschützt, obwohl `~/.claude/**` es
+war: dort stehen die MCP-Server, und ein dort eingetragener Server ist ein
+beliebiger Befehl, der in jeder folgenden Runde startet. Und `.devcontainer/`
+war frei beschreibbar — also auch `init-firewall.sh`, die Grenze, die das
+Konzept die eigentliche Sicherheitsgrenze nennt.
+**Änderung:** beide in `MUSTER_SELBST` und in die deny-Liste aufgenommen.
+
+### E10 — Vier Falsch-Positive, die im Betrieb wehgetan hätten
+
+Guards, die zu viel blockieren, kosten Runden und Kontingent, und der Agent
+lernt daraus, Umwege zu suchen.
+
+| war blockiert | warum das falsch war |
+|---|---|
+| `node --test test/x.test.js` | der naheliegendste Schritt beim Eingrenzen eines Fehlschlags; Interpreter galten pauschal als schreibend |
+| `grep … 2>/dev/null`, `node --test 2>&1` | jedes `>` galt als Schreibzugriff, auch eine Fehlerkanal-Umleitung |
+| `Read` auf `.env.example`, `src/auth/credentials.js` | die Geheimnis-Regel gilt für jedes Werkzeug; damit war ausgerechnet das Auth-Modul unlesbar, das der Reviewer prüfen soll |
+| `touch test/neu.test.js` über die Shell | der Datei-Guard erlaubte dieselbe Datei — die beiden Guards widersprachen sich |
+
+**Änderung:** Interpreter zählen nur mit einem Inline- oder In-place-Schalter
+als schreibend; nur echte Umleitungsziele zählen, nicht jedes `>`;
+Vorlagendateien (`.env.example` und Verwandte) sind ausgenommen und
+`credentials` ist auf Konfigurationsendungen eingegrenzt; der Bash-Guard fragt
+für neue Testdateien dieselbe Git-Frage wie der Datei-Guard.

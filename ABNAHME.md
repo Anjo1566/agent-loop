@@ -9,7 +9,7 @@ Konto. Gemessen am 07.09.2026 gegen Claude Code 2.1.263 auf Windows 11, Git Bash
 Selbst nachvollziehen:
 
 ```bash
-node --test        # 24 Tests, davon 17 Guard-Tests
+node --test        # 36 Tests, davon 29 Guard-Tests mit 90 Einzelfaellen
 ./abnahme.sh       # 34 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
@@ -88,10 +88,12 @@ drei Fällen, darunter zwei Regressionen: `agent/maintenance` und
 `agent/20260907-domain-fix` enthalten die Zeichenfolge `main` und wurden von der
 Fassung des Konzepts fälschlich blockiert.
 
-Die Testsuite deckt darüber hinaus acht Umgehungswege ab, von denen vier in der
-Konzeptfassung funktioniert hätten: `git commit -n`,
+Die Testsuite deckt darüber hinaus jeden bekannten Umgehungsweg ab — die vier
+aus der Konzeptfassung (`git commit -n`,
 `git -c core.hooksPath=/dev/null push --force origin main`,
-`git push origin +agent/x:agent/x` und `git clean -fdx` / `git restore`.
+`git push origin +agent/x:agent/x`, `git clean -fdx`) und die neun, die ein
+adversariales Review dieser Umsetzung danach noch fand; siehe ABWEICHUNGEN
+Abschnitt E.
 
 ## 4. Selbstschutz greift — erfüllt
 
