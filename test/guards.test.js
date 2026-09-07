@@ -15,8 +15,10 @@ const path = require('node:path')
 const REPO = path.resolve(__dirname, '..')
 const HOOKS = path.join(REPO, '.agents', 'hooks')
 
-// A real file inside the repo that the test-file rules must protect.
-const EXISTING_TEST = path.join(REPO, 'test', 'tasklist.test.js')
+// A real, existing test file for the "existing tests are immutable" rule.
+// This file itself, so the check does not depend on the example project —
+// which the README says you may delete when moving the loop to another repo.
+const EXISTING_TEST = __filename
 
 function runGuard (script, payload) {
   const result = spawnSync('bash', [path.join(HOOKS, script)], {
