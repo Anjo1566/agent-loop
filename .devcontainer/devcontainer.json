@@ -1,0 +1,19 @@
+{
+  "name": "agent-loop",
+  "build": { "dockerfile": "Dockerfile" },
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW"
+  ],
+  "remoteUser": "node",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=agent-loop-claude-config,target=/home/node/.claude,type=volume"
+  ],
+  "postCreateCommand": "sudo /usr/local/bin/init-firewall.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["anthropic.claude-code"]
+    }
+  }
+}

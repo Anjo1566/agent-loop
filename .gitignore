@@ -1,0 +1,8 @@
+# Laufzeitzustand der Schleife. Ausnahme: die Skripte in .agents/hooks/ sind
+# die Schutzmechanismen und muessen versioniert sein. Das Muster ".agents/"
+# waere dafuer falsch -- Git steigt in ein ausgeschlossenes Verzeichnis nicht
+# hinab, eine Rueckausnahme darunter greift dann nie.
+/.agents/*
+!/.agents/hooks/
+
+node_modules/
