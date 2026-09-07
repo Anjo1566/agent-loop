@@ -63,7 +63,10 @@ neues_repo() {
   cat > "$ziel/.stub/claude" <<'STUB'
 #!/usr/bin/env bash
 # claude-Stub: protokolliert Modell und Aufwand, fuehrt die Szenario-Aktion
-# aus und gibt eine Runden-JSON aus, wie --output-format json sie liefert.
+# aus und gibt einen Ereignisstrom aus, wie --output-format stream-json ihn
+# liefert: eine Nachricht je Zeile, die Abschlusszeile zuletzt. Die erste Zeile
+# steht bewusst davor -- loop.sh muss die Abschlusszeile herausfischen und darf
+# nicht einfach die Datei als Ganzes lesen.
 MODELL=""; AUFWAND=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +79,7 @@ RUNDE=$(( $(cat .stub/runde 2>/dev/null || echo 0) + 1 ))
 echo "$RUNDE" > .stub/runde
 echo "runde=$RUNDE model=$MODELL effort=$AUFWAND" >> .stub/aufrufe
 if [[ -f .stub/aktion ]]; then . .stub/aktion; fi
+printf '{"type":"system","subtype":"init","session_id":"stub"}\n'
 printf '{"type":"result","subtype":"success","is_error":false,"duration_ms":42,"result":"stub"}\n'
 STUB
   chmod +x "$ziel/.stub/claude"

@@ -151,18 +151,36 @@ for ((i=1; i<=MAX; i++)); do
   VORHER="$(git rev-parse HEAD)"
   echo "=== Runde $i/$MAX — $MODELL / $AUFWAND ==="
 
-  # --verbose würde die JSON-Ausgabe in ein Array verwandeln und jeden jq-Lesen
-  # unten brechen. --bare würde Hooks, Subagents und CLAUDE.md abschalten,
-  # also genau die Schutzmechanismen. Beides gehört hier niemals hin.
+  # stream-json schreibt jede Nachricht als eigene Zeile, sobald sie entsteht.
+  # Genau das liest das Cockpit in .agents/round-N.ndjson live mit. Mit
+  # --output-format json entstuende die Datei erst am Rundenende, und das
+  # Dashboard saehe die ganze Runde lang nichts: Rollenwechsel, Werkzeuge,
+  # Guard-Blockaden und Kosten kamen dort nie an. --verbose ist dabei Pflicht.
+  # --bare würde Hooks, Subagents und CLAUDE.md abschalten, also genau die
+  # Schutzmechanismen. Das gehört hier niemals hin.
   RUNDE_RC=0
   claude -p "$(cat round.md)" \
         --model "$MODELL" --effort "$AUFWAND" \
         --max-turns "$MAX_TURNS" \
         --max-budget-usd "$MAX_BUDGET_USD" \
-        --output-format json \
+        --output-format stream-json --verbose \
         --dangerously-skip-permissions \
         --allowedTools "Read,Write,Edit,Bash,Glob,Grep,Agent" \
-        < /dev/null > ".agents/round-$i.json" || RUNDE_RC=$?
+        < /dev/null > ".agents/round-$i.ndjson" || RUNDE_RC=$?
+
+  # Fuer die Auswertung hier zaehlt nur die Abschlusszeile. Sie traegt dieselben
+  # Felder, die vorher im Rundenjson standen -- alles unten bleibt deshalb
+  # unveraendert. Fehlt sie, ist die Runde abgebrochen.
+  jq -c 'select(.type == "result")' ".agents/round-$i.ndjson" 2>/dev/null \
+    | tail -1 > ".agents/round-$i.json" || true
+  [[ -s ".agents/round-$i.json" ]] \
+    || echo '{"is_error":true,"subtype":"kein Abschluss im Ereignisstrom"}' > ".agents/round-$i.json"
+
+  # Ein Ereignisstrom enthaelt jeden Werkzeugaufruf mitsamt Ergebnis und wird
+  # dadurch gross. Ueber dreissig Runden laeuft sonst die Systemplatte voll.
+  # Das Cockpit liest immer nur die laufende Runde mit, die vorletzte ist
+  # Kulanz fuer den Fall, dass jemand nachschauen will.
+  if (( i > 2 )); then rm -f ".agents/round-$((i - 2)).ndjson"; fi
 
   DAUER=$(jq -r '.duration_ms // "?"' ".agents/round-$i.json" 2>/dev/null || echo "?")
   echo "Runde $i | $MODELL | $AUFWAND | ${DAUER}ms" >> .agents/run.log
@@ -248,6 +266,7 @@ for ((i=1; i<=MAX; i++)); do
     break
   fi
   TESTS_VORHER=$TESTS_JETZT
+
   GRUND="Rundenlimit $MAX erreicht"
 done
 
