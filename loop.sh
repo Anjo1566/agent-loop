@@ -9,6 +9,7 @@ MAX_OPUS_RUNDEN=5           # so viele Eskalationsrunden auf Opus pro Lauf
 MAX_BUDGET_USD=15           # dritte Notbremse pro Runde, Listenpreis-Schätzung
 MAX_LEERRUNDEN=2            # so viele Runden ohne Codeänderung, dann Abbruch
 BASIS_BRANCH="main"         # Zielbranch des Pull Requests
+ZIELNOTE=8.5                # ab dieser Gesamtnote ist der Auftrag erledigt
 # ------------------------------------------------------------------------
 #
 # Beide Befehle laufen über `bash -c`, dürfen also Pipes, Anführungszeichen und
@@ -33,6 +34,9 @@ command -v jq  >/dev/null || fehler "jq fehlt. Ohne jq blockieren die Guards jed
 command -v gh  >/dev/null || fehler "gh fehlt."
 command -v git >/dev/null || fehler "git fehlt."
 command -v claude >/dev/null || fehler "claude fehlt."
+
+jq -n --argjson z "$ZIELNOTE" 'if ($z|type) == "number" and $z >= 0 and $z <= 10 then empty else error("x") end' >/dev/null 2>&1 \
+  || fehler "ZIELNOTE muss eine Zahl von 0 bis 10 sein, war '$ZIELNOTE'."
 
 git rev-parse --git-dir >/dev/null 2>&1 || fehler "Das ist kein Git-Repository."
 git rev-parse HEAD >/dev/null 2>&1 || fehler "Das Repository hat noch keinen Commit."
@@ -100,7 +104,7 @@ ZWEIG="agent/$(date +%Y%m%d-%H%M)"
 git checkout -b "$ZWEIG" --quiet
 
 mkdir -p .agents
-rm -f .agents/STOP .agents/next-round.json
+rm -f .agents/STOP .agents/next-round.json .agents/grade.json
 : > .agents/run.log
 
 # QUESTIONS.md wird NICHT geleert. Die Charta erklärt sie für "appended to,
@@ -266,6 +270,21 @@ for ((i=1; i<=MAX; i++)); do
     break
   fi
   TESTS_VORHER=$TESTS_JETZT
+
+  # Das Notentor. Der Chef legt .agents/grade.json nach der Bewertung durch den
+  # grader-Subagenten an. Fehlt sie, laeuft der Lauf weiter: eine fehlende Note
+  # ist kein Grund aufzuhoeren, aber sie wird benannt.
+  if jq -e '.gesamt | numbers' .agents/grade.json >/dev/null 2>&1; then
+    NOTE=$(jq -r '.gesamt' .agents/grade.json)
+    BEGRUENDUNG=$(jq -r '.begruendung // ""' .agents/grade.json)
+    echo "Note nach Runde $i: $NOTE von 10 (Ziel $ZIELNOTE) — $BEGRUENDUNG"
+    if jq -e --argjson z "$ZIELNOTE" '.gesamt >= $z' .agents/grade.json >/dev/null 2>&1; then
+      GRUND="Zielnote erreicht in Runde $i: $NOTE von 10 (Ziel $ZIELNOTE)"
+      break
+    fi
+  else
+    echo "Runde $i hat keine brauchbare Note hinterlassen (.agents/grade.json)."
+  fi
 
   GRUND="Rundenlimit $MAX erreicht"
 done

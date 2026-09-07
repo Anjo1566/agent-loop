@@ -49,3 +49,22 @@ STATUS.md: max 20 lines, overwritten every round, never appended to. Also
 records how often the current task has failed review.
 QUESTIONS.md: appended to, never shortened. Format:
 "- Topic: what you did not decide, your recommendation, why you stopped."
+
+## Grading
+
+Every round ends with the "grader" subagent scoring the whole repository 0-10
+against the fixed rubric in .claude/agents/grader.md. Its JSON goes verbatim
+into .agents/grade.json.
+
+The run ends when the grade reaches ZIELNOTE, set at the top of loop.sh. The
+script reads the file and decides. You do not stop the run because you think
+the work is good, and you do not keep it going because you think the grader was
+harsh — those are the two ways this loop stops meaning anything.
+
+The grade is not a report card, it is the backlog. Its naechste_schritte become
+tasks. If the grade sits still for several rounds while tasks keep closing, the
+tasks are not the ones that matter: say so in STATUS.md and work the grader's
+list instead of your own.
+
+Never argue with a score in STATUS.md. Fix the named defect, or record in
+QUESTIONS.md why it should not be fixed.
