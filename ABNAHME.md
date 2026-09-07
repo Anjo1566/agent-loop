@@ -201,6 +201,17 @@ gh api -X DELETE repos/Anjo1566/agent-loop/branches/main/protection/enforce_admi
 
 ---
 
+## Umzug in ein anderes Repository
+
+Das README behauptet, der Loop lasse sich mit einer Handvoll Dateien in ein
+fremdes Repository umhängen und das Beispielprojekt sei entbehrlich. `abnahme.sh`
+prüft das jetzt, statt es zu behaupten: es baut ein Repository aus genau dieser
+Liste, legt ein Miniprojekt daneben und lässt dort die Guards und die
+Vorprüfung von `loop.sh` laufen. 30 von 30 Tests grün, Vorprüfung bestanden.
+
+Beim ersten Versuch waren es 25 von 30 — fünf Guard-Tests hingen an einer Datei
+des Beispielprojekts. Siehe ABWEICHUNGEN E11.
+
 ## Nicht gemessen
 
 - **Der Container.** `.devcontainer/` ist mitgeliefert, aber nie gebaut —

@@ -431,3 +431,23 @@ als schreibend; nur echte Umleitungsziele zählen, nicht jedes `>`;
 Vorlagendateien (`.env.example` und Verwandte) sind ausgenommen und
 `credentials` ist auf Konfigurationsendungen eingegrenzt; der Bash-Guard fragt
 für neue Testdateien dieselbe Git-Frage wie der Datei-Guard.
+
+### E11 — Die Umzugsanleitung stimmte nicht
+
+Das README nennt eine Liste von Dateien für den Umzug in ein anderes Repository
+und sagt, das Beispielprojekt sei entbehrlich. Baut man ein Repository aus genau
+dieser Liste, fallen fünf Guard-Tests durch: sie verwiesen auf
+`test/tasklist.test.js`, eine Datei des Beispielprojekts.
+**Änderung:** die Guard-Tests hängen jetzt an der Testdatei, in der sie stehen —
+die reist mit. `abnahme.sh` baut seitdem in jedem Durchlauf ein Repository aus
+genau der README-Liste und lässt dort die Guards und die Vorprüfung von
+`loop.sh` laufen. Eine Anleitung, die niemand ausführt, ist eine Behauptung.
+
+### E12 — Die Abnahme hing am ausgecheckten Branch
+
+`abnahme.sh` klont das Repository; der Klon übernimmt dabei den Branch, auf dem
+das Quell-Repository gerade steht. `loop.sh` verzweigt aber von `main` und
+brach mit »Branch main existiert nicht« ab, sobald man die Abnahme von einem
+Feature-Branch aus startete — also genau dann, wenn man sie am nötigsten
+braucht.
+**Änderung:** der Klon setzt `main` auf den geklonten Stand.

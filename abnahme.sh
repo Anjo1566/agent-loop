@@ -50,6 +50,10 @@ neues_repo() {
   mkdir -p "$BASIS"
   git clone -q "$QUELLE" "$ziel"
   git -C "$ziel" remote remove origin
+  # Der Klon uebernimmt den Branch, auf dem das Quell-Repo gerade steht. loop.sh
+  # verzweigt aber von main, also wird main hier auf den geklonten Stand gesetzt
+  # -- sonst haengt die Abnahme daran, welchen Branch man gerade ausgecheckt hat.
+  git -C "$ziel" switch -q -C main
   git -C "$ziel" config user.name "Abnahme"
   git -C "$ziel" config user.email "abnahme@example.invalid"
 
