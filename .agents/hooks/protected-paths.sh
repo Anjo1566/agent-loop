@@ -12,6 +12,17 @@
 #   - Backslashes sind vorher zu Schrägstrichen normalisiert (Windows).
 #   - Deshalb dürfen die Muster mit `$` ans Ende ankern.
 
+# Version des Schutzsatzes. Sie wird hochgezählt, sobald sich an den Mustern
+# oder an den Regeln in guard-bash.sh etwas Sicherheitsrelevantes ändert.
+#
+# Es gibt sie, weil der Loop kopiert wird: `agent-cockpit` lief acht echte
+# Runden mit einer Fassung, die `rm -rf .agents/hooks`, `git push -u origin
+# "main"` und `gh api -X DELETE …/protection` durchliess — alles drei in der
+# Fassung daneben längst blockiert. Von aussen sah das identisch aus. loop.sh
+# vergleicht diese Zahl mit der, die es selbst erwartet, und verweigert den
+# Start bei einem Rückstand; das Cockpit zeigt sie je Projekt an.
+SCHUTZ_VERSION=2
+
 # Bestehende Tests, Snapshots und Fixtures.
 # `spec/` ist bewusst eng gefasst: ein Verzeichnis dieses Namens enthält oft
 # eine OpenAPI-Spezifikation, und die ist kein Test.

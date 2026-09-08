@@ -75,11 +75,42 @@ PRUEFTEXT="${PRUEFTEXT//\'/}"
 
 # Linke Wortgrenze eines Befehlsworts. Anführungszeichen, Klammern und
 # Backticks gehören dazu: ohne sie schaltet ein vorangestelltes `bash -c "` die
-# gesamte Pfadprüfung ab.
-G='(^|[;&|(){}[:space:]"'"'"'`])'
+# gesamte Pfadprüfung ab. Der Backslash gehört ebenfalls dazu: ohne ihn traf
+# `C:\Program Files\nodejs\node.exe skript.js` kein Interpretermuster, und die
+# Regel "kein Skript von ausserhalb des Projekts" lief an einem ausgeschriebenen
+# Windows-Pfad vorbei.
+G='(^|[;&|(){}\\[:space:]"'"'"'`])'
 # Rechte Wortgrenze. `"sed" -i ...` endet auf einem Anführungszeichen, nicht auf
 # einem Leerzeichen — ohne diese Klasse trifft kein Befehlswort in Anführung.
-GR='([;&|(){}[:space:]"'"'"'`]|$)'
+GR='([;&|(){}\\[:space:]"'"'"'`]|$)'
+
+# Auf Windows heisst dasselbe Programm auch `node.exe`. Die Wortgrenze GR
+# endet aber nicht auf einem Punkt, also traf `bash.exe /tmp/evil.sh` kein
+# einziges Interpretermuster und lief an der Regel vorbei, die genau das
+# verhindern soll (Befund M-4). Jede Interpreterliste trägt deshalb ${EXE}.
+EXE='(\.(exe|cmd|bat|com))?'
+
+# In-place- und Inline-Schalter. Diese beiden Muster werden IMMER
+# case-sensitiv geprueft, anders als die Befehlswoerter: `-e` ist Code, `-E`
+# ist erweiterte Regex, und ein `grep -E` in derselben Zeile darf einen
+# Interpreter nicht zu einem Schreibbefehl machen.
+#
+# Die lange Schreibweise fehlte: das Muster
+# sucht `(c|e)` unmittelbar vor Leerzeichen, `=` oder Zeilenende, und in
+# `--in-place` steht das `e` mitten im Wort. `sed --in-place 1d test/x.test.js`
+# kam damit durch und hat die verfolgte Testdatei geändert (Befund M-3).
+INLINE_SCHALTER='(^|[[:space:]])--?[a-zA-Z]*(i|c|e)([[:space:]]|=|$)'
+# Die langen Schreibweisen. Sie werden case-insensitiv geprueft: --IN-PLACE
+# gibt es in keinem Programm, eine Verwechslung wie -e gegen -E kann es hier
+# also nicht geben.
+INLINE_LANG='(^|[[:space:]])--(in-place|inplace|expression|eval|execute|command|script|file)([[:space:]]|=|$)|(^|[[:space:]])-(Command|EncodedCommand)([[:space:]]|$)'
+
+# Nur der Code-Schalter, ohne `-i`. Die Regeln, die einen Einzeiler an seinem
+# INHALT beurteilen, dürfen nicht schon bei `sed -i` anschlagen: sonst wäre
+# `sed -i 's/mkdir/x/' src/a.js` gesperrt, obwohl es eine gewöhnliche
+# Quelldatei schreibt und die Pfadprüfung weiter unten das sauber entscheidet.
+INLINE_CODE='(^|[[:space:]])--?[a-zA-Z]*(c|e)([[:space:]]|=|$)'
+INLINE_CODE_LANG='(^|[[:space:]])--(expression|eval|execute|command|script)([[:space:]]|=|$)|(^|[[:space:]])-(Command|EncodedCommand)([[:space:]]|$)'
 
 # Sucht in beiden geprüften Fassungen. Eine Regel, die nur die rohe Fassung
 # ansieht, ist mit einem Anführungszeichen zu umgehen; eine, die nur die
@@ -96,30 +127,79 @@ $PRUEFTEXT"
 im_befehl()   { grep -qE  "$1" <<< "$ZWEIFACH"; }
 im_befehl_i() { grep -qiE "$1" <<< "$ZWEIFACH"; }
 
+# --- Einfache Befehle ----------------------------------------------------
+# Zerlegt die Zeile an Shell-Operatoren UND an Anführungszeichen. Gebraucht
+# wird das nur an einer Stelle: um zu erkennen, ob eine `$`-Ersetzung im
+# Schreibbefehl selbst steht oder in einem anderen Glied der Zeile. Siehe die
+# ausführliche Begründung unten bei schreibglied_mit_expansion.
+GLIEDER=$(printf '%s' "$OHNE_BOTSCHAFT" | tr ';&|(){}`"'"'"'<>\n' '\n')
+
+# Wörter, die vor dem eigentlichen Befehl stehen dürfen, ohne dass er aufhört,
+# der Befehl zu sein: Zuweisungen und die üblichen Vorspannprogramme. `git rm`
+# und `env sed` sollen weiterhin als Schreibbefehl gelten.
+VORSPANN='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|sudo|env|command|nohup|setsid|busybox|time|git|xargs|exec|timeout([[:space:]]+[0-9.]+[smhd]?)?)'
+
+# Alle Schreibwörter ohne Wortgrenzen, für die Prüfung "steht am Anfang eines
+# Gliedes". Die Liste muss zu SCHREIBEND_IMMER, SCHREIBEND_PFAD, SCHREIBEND_PS
+# und INTERPRETER passen; sie steht hier zusammen, damit das eine Stelle bleibt.
+SCHREIBWORT='(tee|dd|truncate|shred|install|rsync|ed|ex|vi|vim|nvim|emacs|sponge|xargs|rm|mv|cp|touch|chmod|chown|ln|mkdir|copy|move|del|erase|robocopy|xcopy|certutil|curl|wget|aria2c|iwr|invoke-webrequest|bitsadmin|new-object|[gmn]?awk|sed|perl|python[0-9.]*|py|node|deno|bun|ruby|php|pwsh|powershell|cmd|osascript|set-content|add-content|out-file|clear-content|new-item|remove-item|move-item|copy-item|rename-item|set-itemproperty|remove-itemproperty|new-itemproperty|export-csv|export-clixml|tee-object|start-bitstransfer|\[[a-zA-Z.]*io\.[a-zA-Z]+\]::[a-zA-Z]+)'
+
+# Wahr, wenn ein Glied, das mit einem Schreibwort anfängt, eine Ersetzung
+# enthält — dann ist das Ziel dieses Schreibbefehls nicht ausrechenbar.
+schreibglied_mit_expansion() {
+  grep -qiE "^[[:space:]]*($VORSPANN[[:space:]]+)*${SCHREIBWORT}(${EXE})?([[:space:]]|$).*[\$\`]" <<< "$GLIEDER"
+}
+
 # --- 1. Guard-Umgehung und Unumkehrbares --------------------------------
 # `git commit -n` ist die Kurzform von --no-verify und muss mitgefangen
 # werden; bei `git push` heisst -n dagegen --dry-run und ist harmlos.
 # `git` und `commit` dürfen dabei durch Optionen getrennt sein: `git -c x=y
 # commit -n` kam sonst durch, während derselbe Fehler bei `git push` längst
 # behoben war (Abweichung A5).
-if im_befehl '(--no-verify|git\b[^;&|]*[[:space:]](commit|merge)([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+-[a-zA-Z]*n([[:space:]]|$))'; then
+if im_befehl_i '(--no-verify|git\b[^;&|]*[[:space:]](commit|merge)([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+-[a-zA-Z]*n([[:space:]]|$))'; then
   echo "Blocked: skipping the commit hooks bypasses the safeguards." >&2
   exit 2
 fi
 
-if im_befehl "${G}git[[:space:]]+(stash|clean|restore)|git[[:space:]]+reset[[:space:]]+--(hard|merge|keep)|git[[:space:]]+checkout[[:space:]]+(--|[^-][^[:space:]]*[[:space:]]+--)"; then
+# `git checkout -f`, `git switch -f` und `git switch --discard-changes` werfen
+# den Arbeitsbaum genauso weg wie `git checkout -- .`, standen aber in keinem
+# Muster (Befund M-9). Umgekehrt war `git checkout main --quiet` blockiert,
+# obwohl es nur den Branch wechselt: das alte Muster verlangte hinter dem Ref
+# bloss die Zeichen `--`, und die stehen auch am Anfang jeder langen Option.
+# Deshalb muss `--` jetzt ein eigenes Wort sein.
+if im_befehl_i "${G}git[[:space:]]+(stash|clean|restore)${GR}" \
+   || im_befehl_i "${G}git[[:space:]]+reset[[:space:]]+--(hard|merge|keep)${GR}" \
+   || im_befehl_i "${G}git[[:space:]]+checkout[[:space:]]+(--([[:space:]]|$)|[^-][^[:space:]]*[[:space:]]+--([[:space:]]|$))" \
+   || im_befehl_i "${G}git[[:space:]]+(checkout|switch)[[:space:]]+([^;&|]*[[:space:]])?(-[a-zA-Z]*f[a-zA-Z]*|--force|--discard-changes)([[:space:]]|$)"; then
   echo "Blocked: this discards work irreversibly and is the usual way to hide a change. Commit instead." >&2
   exit 2
 fi
 
 # Werkzeuge, deren Ziel im Inhalt einer Datei steht statt auf der
 # Kommandozeile. Sie lassen sich nicht prüfen, nur ablehnen.
-if im_befehl "${G}(patch|git[[:space:]]+(apply|am|checkout-index))${GR}"; then
+#
+# Die Liste war auf Diffs beschränkt. Ein Archiv tut dasselbe: `tar -xf x.tar`
+# und `unzip -o x.zip` schreiben beliebige Pfade, ohne einen davon zu nennen,
+# und `xargs` bekommt seine Ziele aus der Pipe oder aus einer Datei (Befund
+# M-8). Alle vier reproduzieren den Fall, für den `patch` schon abgelehnt wird.
+# `tar -c` (packen) bleibt erlaubt — geprüft wird auf einen Auspack-Schalter,
+# und `--exclude` trifft ihn nicht, weil das Muster hinter dem Bindestrich
+# Buchstaben verlangt und kein zweites `-`.
+if im_befehl_i "${G}(patch|git[[:space:]]+(apply|am|checkout-index))${GR}"; then
   echo "Blocked: applying a diff hides which files it writes. Use the Edit tool for code changes." >&2
   exit 2
 fi
 
-if im_befehl "${G}find([[:space:]]|$).*[[:space:]]-(delete|exec|execdir|ok)([[:space:]]|$)"; then
+if { im_befehl_i "${G}(tar|bsdtar|cpio)${GR}" \
+     && im_befehl_i '(^|[[:space:]])(-[a-zA-Z]*[xi][a-zA-Z]*([[:space:]]|$)|--(extract|get|unpack)([[:space:]]|=|$))'; } \
+   || im_befehl_i "${G}(unzip|gunzip|bunzip2|unxz|7z[a-z]*[[:space:]]+[ex]|zstd[[:space:]]+-d)${GR}" \
+   || im_befehl_i "${G}xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+(env[[:space:]]+)?(rm|mv|cp|ln|tee|dd|sed|truncate|shred|install|rsync|chmod|chown|del|erase|node|python[0-9.]*|perl|ruby|bash|sh)${GR}" \
+   || im_befehl_i "${G}xargs[[:space:]]+([^;&|]*[[:space:]])?-a([[:space:]]|$)"; then
+  echo "Blocked: this writes files it never names — an archive carries its paths inside, and xargs takes them from a pipe or a file. Name the files directly, or use the Edit tool." >&2
+  exit 2
+fi
+
+if im_befehl_i "${G}find([[:space:]]|$).*[[:space:]]-(delete|exec|execdir|ok)([[:space:]]|$)"; then
   echo "Blocked: find with -delete or -exec can reach any file without naming it. Name the file directly." >&2
   exit 2
 fi
@@ -132,80 +212,28 @@ fi
 # und `git symbolic-ref HEAD` schreibt den aktuellen Branch auf main um. Alle
 # vier kamen durch (Befunde aus dem Review). Lesende Abfragen der Konfiguration
 # bleiben erlaubt.
-if im_befehl "${G}git\b[^;&|]*[[:space:]](update-index|update-ref|symbolic-ref|hash-object|mktree|commit-tree|fast-import|replace|worktree|filter-branch|reflog|prune|gc)${GR}"; then
+# `credential` gibt das hinterlegte Token aus — `gh auth token` ist längst
+# gesperrt, `git credential fill` druckt dasselbe (Befund m-4). `daemon`,
+# `send-email` und `instaweb` schicken das Repository nach draussen.
+# `submodule add` und `init --template` hängen fremde Verzeichnisse und fremde
+# `.git/hooks` ein, die beim nächsten Commit laufen (Befund m-6).
+if im_befehl_i "${G}git\b[^;&|]*[[:space:]](update-index|update-ref|symbolic-ref|hash-object|mktree|commit-tree|fast-import|replace|worktree|filter-branch|reflog|prune|gc|credential|daemon|send-email|instaweb|bundle)${GR}" \
+   || im_befehl_i "${G}git\b[^;&|]*[[:space:]]submodule[[:space:]]+(add|update|init|sync|deinit|set-url|absorbgitdirs)${GR}" \
+   || im_befehl_i "${G}git\b[^;&|]*[[:space:]]notes[[:space:]]+(add|append|copy|edit|remove|prune|merge)${GR}" \
+   || im_befehl_i "${G}git\b[^;&|]*[[:space:]](init|clone)\b[^;&|]*--template"; then
   echo "Blocked: git plumbing writes past the working tree, so the round's diff no longer shows what happened. Use ordinary git commands." >&2
   exit 2
 fi
-if im_befehl "${G}git\b[^;&|]*[[:space:]]config${GR}" \
-   && ! im_befehl "${G}git\b[^;&|]*[[:space:]]config[[:space:]]+(--get|--get-all|--get-regexp|--list|-l)${GR}"; then
+if im_befehl_i "${G}git\b[^;&|]*[[:space:]]config${GR}" \
+   && ! im_befehl_i "${G}git\b[^;&|]*[[:space:]]config[[:space:]]+(--get|--get-all|--get-regexp|--list|-l)${GR}"; then
   echo "Blocked: changing git configuration outlives the round and can redirect hooks, remotes and editors. Read it with 'git config --get' or add an entry to QUESTIONS.md." >&2
   exit 2
 fi
 
 # Etwas an einen fremden Rechner schicken ist ein äusserer Effekt und laut
 # Charta ausserhalb der Entscheidungsgrenze.
-if im_befehl "${G}(scp|sftp|ssh|rclone|aws|gcloud|az)${GR}"; then
+if im_befehl_i "${G}(scp|sftp|ssh|rclone|aws|gcloud|az)${GR}"; then
   echo "Blocked: this reaches a machine outside this repository. Outward-facing effects are outside your decision boundary — add an entry to QUESTIONS.md." >&2
-  exit 2
-fi
-
-# Ein Interpreter-Einzeiler, der ins Dateisystem schreibt, trägt seinen Pfad
-# oft nicht als Token: `node -e "…writeFileSync(['loop','sh'].join('.'),'')"`
-# baut ihn zur Laufzeit zusammen. Die Pfadprüfung kann das prinzipiell nicht
-# sehen — also dieselbe Antwort wie bei `patch`: ablehnen, statt zu raten.
-# Lesende Einzeiler bleiben erlaubt, und für Codeänderungen gibt es Edit.
-if im_befehl "${G}(sed|perl|python[0-9.]*|py|node|deno|bun|ruby|php|pwsh|powershell)${GR}" \
-   && im_befehl '(^|[[:space:]])--?[a-zA-Z]*(c|e)([[:space:]]|=|$)' \
-   && im_befehl_i '(writeFile|appendFile|createWriteStream|\.write\(|unlink|rmSync|rmdir|mkdir|renameSync|copyFile|truncate|chmod|open[[:space:]]*\([^)]*[",'"'"']w|Set-Content|Add-Content|Out-File|Remove-Item|shutil\.|os\.remove|os\.rename|Path\([^)]*\)\.write)'; then
-  echo "Blocked: a one-liner that writes to the filesystem hides which file it touches. Use the Edit or Write tool for file changes." >&2
-  exit 2
-fi
-
-# Ein Skript ausserhalb des Projekts auszuführen ist genau der Fall, für den
-# `patch` und `git apply` abgelehnt werden: der Inhalt steht nicht im Befehl.
-# Skripte IM Projekt sind versioniert und im Diff sichtbar, die bleiben erlaubt.
-if im_befehl "${G}(bash|sh|zsh|ksh|dash|python[0-9.]*|py|node|perl|ruby|pwsh|powershell)[[:space:]]"; then
-  while IFS= read -r WORT; do
-    [[ -z "$WORT" ]] && continue
-    case "$WORT" in
-      -*) continue ;;
-    esac
-    if ausserhalb_des_projekts "${WORT//\\//}" "$PROJEKT" streng; then
-      echo "Blocked: running a script from outside the project hides what it does. Keep it in the repository, where the diff shows it." >&2
-      exit 2
-    fi
-  # printf '%s\n', nicht '%s': ohne abschliessenden Zeilenumbruch liefert
-  # `read` beim letzten Wort einen Fehlschlag, und die Schleife überspringt
-  # genau das Token, auf das es hier ankommt — den Skriptpfad.
-  done < <(printf '%s\n' "$PRUEFTEXT" | tr ' \t' '\n\n')
-fi
-
-# Dieselbe Begründung wie bei `patch`, nur für Befehle, die den auszuführenden
-# Text irgendwoher beziehen statt ihn zu zeigen. `git apply` abzulehnen und
-# `curl … | bash` durchzulassen war derselbe Fehler zweimal (Befund M-10).
-if im_befehl '(^|[;&|(){}`])[[:space:]]*(source|\.)[[:space:]]+[^[:space:]]' \
-   || im_befehl "${G}eval${GR}" \
-   || im_befehl '(^|[[:space:]])BASH_ENV=' \
-   || im_befehl "(curl|wget|Invoke-WebRequest|iwr)[^|;&]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|k|d)?sh${GR}"; then
-  echo "Blocked: running code that is not visible in the command line cannot be checked. Put the steps in the command itself." >&2
-  exit 2
-fi
-
-# Abhängigkeiten sind laut Charta eine menschliche Entscheidung. Diese
-# Unterbefehle schreiben package.json und das Lockfile, ohne sie zu nennen.
-if im_befehl "${G}(npm|pnpm|bun)[[:space:]]+(i|install|add|uninstall|remove|rm|update|pkg)([[:space:]]|$)" \
-   || im_befehl "${G}yarn[[:space:]]+(add|remove|upgrade)([[:space:]]|$)" \
-   || im_befehl "${G}npx[[:space:]]" \
-   || im_befehl "${G}(pip[0-9.]*|poetry|cargo|go)[[:space:]]+(install|add|remove|uninstall|get)([[:space:]]|$)"; then
-  echo "Blocked: dependencies and build configuration are a human decision. Add an entry to QUESTIONS.md." >&2
-  exit 2
-fi
-
-# `mkfs` traf nur als blosses Wort — `mkfs.ext4` und `mkfs.xfs` kamen durch.
-# Der Loop hat diese Lücke selbst gefunden und in QUESTIONS.md eingetragen,
-# konnte sie aber nicht beheben, weil ihm dieses Skript gesperrt ist.
-if im_befehl_i "${G}mkfs(\.[a-z0-9]+)?${GR}|:\(\)\{|${G}(npm|yarn|pnpm)[[:space:]]+publish|${G}rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*[rf][a-zA-Z]*[[:space:]]+(/|~|\.\.?)([[:space:]]|$)"; then
-  echo "Blocked: this is irreversible or has external effects." >&2
   exit 2
 fi
 
@@ -243,18 +271,88 @@ TOETER_KILL="${BEFEHLSPOSITION}kill([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+(\\\$
 if im_befehl_i "$TOETER" \
    || im_befehl_i "$TOETER_PS" \
    || im_befehl_i "$TOETER_DIENST" \
-   || im_befehl "$TOETER_XARGS" \
-   || im_befehl "$TOETER_KILL"; then
+   || im_befehl_i "$TOETER_XARGS" \
+   || im_befehl_i "$TOETER_KILL"; then
   echo "Blocked: you are yourself a node process, and so is the cockpit watching you. Killing processes by name or PID ends your own run silently. Start anything long-running with a time limit instead, e.g. 'timeout 20 npm start'." >&2
   exit 2
 fi
 
 # Dieselbe Tat durch einen Interpreter. Die Pfadpruefung weiter unten kennt
 # INTERPRETER und INLINE_SCHALTER schon; hier zaehlt nur, was der Einzeiler tut.
-if im_befehl "${G}(perl|python[0-9.]*|node|ruby|php)${GR}" \
-   && im_befehl '(^|[[:space:]])--?[a-zA-Z]*(c|e)([[:space:]]|=|$)' \
+if im_befehl_i "${G}(perl|python[0-9.]*|node|ruby|php)${EXE}${GR}" \
+   && { im_befehl "$INLINE_CODE" || im_befehl_i "$INLINE_CODE_LANG"; } \
    && im_befehl_i '(process\.kill|os\.kill|killpg|\.Kill\(|TerminateProcess)'; then
   echo "Blocked: killing a process from a one-liner is the same act as taskkill. See above." >&2
+  exit 2
+fi
+
+# Ein Interpreter-Einzeiler, der ins Dateisystem schreibt, trägt seinen Pfad
+# oft nicht als Token: `node -e "…writeFileSync(['loop','sh'].join('.'),'')"`
+# baut ihn zur Laufzeit zusammen. Die Pfadprüfung kann das prinzipiell nicht
+# sehen — also dieselbe Antwort wie bei `patch`: ablehnen, statt zu raten.
+# Lesende Einzeiler bleiben erlaubt, und für Codeänderungen gibt es Edit.
+if im_befehl_i "${G}(sed|perl|python[0-9.]*|py|node|deno|bun|ruby|php|pwsh|powershell)${EXE}${GR}" \
+   && { im_befehl "$INLINE_CODE" || im_befehl_i "$INLINE_CODE_LANG"; } \
+   && im_befehl_i '(writeFile|appendFile|createWriteStream|\.write\(|unlink|rmSync|rmdir|mkdir|renameSync|copyFile|truncate|chmod|open[[:space:]]*\([^)]*[",'"'"']w|Set-Content|Add-Content|Out-File|Remove-Item|shutil\.|os\.remove|os\.rename|Path\([^)]*\)\.write)'; then
+  echo "Blocked: a one-liner that writes to the filesystem hides which file it touches. Use the Edit or Write tool for file changes." >&2
+  exit 2
+fi
+
+# Ein Skript ausserhalb des Projekts auszuführen ist genau der Fall, für den
+# `patch` und `git apply` abgelehnt werden: der Inhalt steht nicht im Befehl.
+# Skripte IM Projekt sind versioniert und im Diff sichtbar, die bleiben erlaubt.
+if im_befehl_i "${G}(bash|sh|zsh|ksh|dash|python[0-9.]*|py|node|deno|bun|perl|ruby|php|pwsh|powershell)${EXE}[[:space:]]"; then
+  while IFS= read -r WORT; do
+    [[ -z "$WORT" ]] && continue
+    case "$WORT" in
+      -*) continue ;;
+    esac
+    if ausserhalb_des_projekts "${WORT//\\//}" "$PROJEKT" streng; then
+      echo "Blocked: running a script from outside the project hides what it does. Keep it in the repository, where the diff shows it." >&2
+      exit 2
+    fi
+  # printf '%s\n', nicht '%s': ohne abschliessenden Zeilenumbruch liefert
+  # `read` beim letzten Wort einen Fehlschlag, und die Schleife überspringt
+  # genau das Token, auf das es hier ankommt — den Skriptpfad.
+  done < <(printf '%s\n' "$PRUEFTEXT" | tr ' \t' '\n\n')
+fi
+
+# Dieselbe Begründung wie bei `patch`, nur für Befehle, die den auszuführenden
+# Text irgendwoher beziehen statt ihn zu zeigen. `git apply` abzulehnen und
+# `curl … | bash` durchzulassen war derselbe Fehler zweimal (Befund M-10).
+if im_befehl '(^|[;&|(){}`])[[:space:]]*(source|\.)[[:space:]]+[^[:space:]]' \
+   || im_befehl_i "${G}eval${GR}" \
+   || im_befehl '(^|[[:space:]])BASH_ENV=' \
+   || im_befehl_i "(curl|wget|Invoke-WebRequest|iwr)[^|;&]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|k|d)?sh${EXE}${GR}"; then
+  echo "Blocked: running code that is not visible in the command line cannot be checked. Put the steps in the command itself." >&2
+  exit 2
+fi
+
+# Abhängigkeiten sind laut Charta eine menschliche Entscheidung. Diese
+# Unterbefehle schreiben package.json und das Lockfile, ohne sie zu nennen.
+# `npx` war gesperrt, `npm exec --` und `pnpm dlx` nicht — beide laden und
+# starten ein fremdes Paket, also genau dasselbe, nur anders geschrieben
+# (Befund m-5). `npm create`/`init` und `corepack` schreiben package.json bzw.
+# installieren einen Paketmanager.
+#
+# NICHT gesperrt: `npm test` und `npm run <skript>`. Das Review hat auch
+# `node --run` genannt; das war falsch. Alle drei führen aus, was in
+# package.json steht — und package.json ist für den Agenten unveränderbar, der
+# Inhalt stammt also vom Menschen. Sie zu sperren hätte nur den normalen
+# Testlauf des Coders zerschlagen.
+if im_befehl_i "${G}(npm|pnpm|bun)[[:space:]]+(i|install|add|uninstall|remove|rm|update|pkg|exec|dlx|create|init)([[:space:]]|$)" \
+   || im_befehl_i "${G}yarn[[:space:]]+(add|remove|upgrade|dlx|create)([[:space:]]|$)" \
+   || im_befehl_i "${G}(npx|corepack)${EXE}[[:space:]]" \
+   || im_befehl_i "${G}(pip[0-9.]*|poetry|cargo|go|gem|composer)[[:space:]]+(install|add|remove|uninstall|get)([[:space:]]|$)"; then
+  echo "Blocked: dependencies and build configuration are a human decision. Add an entry to QUESTIONS.md." >&2
+  exit 2
+fi
+
+# `mkfs` traf nur als blosses Wort — `mkfs.ext4` und `mkfs.xfs` kamen durch.
+# Der Loop hat diese Lücke selbst gefunden und in QUESTIONS.md eingetragen,
+# konnte sie aber nicht beheben, weil ihm dieses Skript gesperrt ist.
+if im_befehl_i "${G}mkfs(\.[a-z0-9]+)?${GR}|:\(\)\{|${G}(npm|yarn|pnpm)[[:space:]]+publish|${G}rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*[rf][a-zA-Z]*[[:space:]]+(/|~|\.\.?)([[:space:]]|$)"; then
+  echo "Blocked: this is irreversible or has external effects." >&2
   exit 2
 fi
 
@@ -262,9 +360,9 @@ fi
 # Am Verb ankern, damit `git -c foo=bar push` nicht am Muster vorbeiläuft.
 # Geprüft wird auf der entquoteten Fassung: `git push -u origin "main"` traf
 # das an Wortgrenzen verankerte Muster sonst nicht.
-if printf '%s' "$PRUEFTEXT" | grep -qE "${G}git\b[^;&|]*[[:space:]]push([[:space:]]|$)"; then
+if printf '%s' "$PRUEFTEXT" | grep -qiE "${G}git\b[^;&|]*[[:space:]]push([[:space:]]|$)"; then
   # `-fu` ist dasselbe wie `-uf`: das f darf irgendwo im Flag-Bündel stehen.
-  if printf '%s' "$PRUEFTEXT" | grep -qE '(--force|--force-with-lease|--mirror|--delete|(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)|(^|[[:space:]])\+[^[:space:]]*:|(^|[[:space:]:/])(refs/heads/)?(main|master)([[:space:]]|$))'; then
+  if printf '%s' "$PRUEFTEXT" | grep -qiE '(--force|--force-with-lease|--mirror|--delete|(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)|(^|[[:space:]])\+[^[:space:]]*:|(^|[[:space:]:/])(refs/heads/)?(main|master)([[:space:]]|$))'; then
     echo "Blocked: no push to main and no force push. Push to an agent branch only." >&2
     exit 2
   fi
@@ -313,7 +411,7 @@ fi
 # vierzig Unterbefehle und bekommt neue. Deshalb umgekehrt: eine Erlaubnisliste
 # aus lesenden Aufrufen, alles andere blockiert. Der Loop selbst ruft `gh pr
 # create` in loop.sh, ausserhalb der Sitzung, und ist davon nicht betroffen.
-if printf '%s' "$PRUEFTEXT" | grep -qE "${G}gh${GR}"; then
+if printf '%s' "$PRUEFTEXT" | grep -qiE "${G}gh${EXE}${GR}"; then
   # Die Wörter nach `gh`, ohne Optionen. Mehrere `gh`-Aufrufe in einer Zeile
   # werden einzeln geprüft.
   while IFS= read -r AUFRUF; do
@@ -342,7 +440,7 @@ if printf '%s' "$PRUEFTEXT" | grep -qE "${G}gh${GR}"; then
       echo "Blocked: gh may only read here (view, list, diff, checks, status, search, GET api). Merging, deleting branch protection, changing settings, secrets, workflows and releases are outward-facing effects and outside your decision boundary — add an entry to QUESTIONS.md. loop.sh opens the pull request itself after the run." >&2
       exit 2
     fi
-  done < <(printf '%s' "$PRUEFTEXT" | grep -oE "${G}gh[[:space:]]+[^;&|]*" | sed -E 's/^[^g]*gh[[:space:]]+//')
+  done < <(printf '%s' "$PRUEFTEXT" | grep -oiE "${G}gh${EXE}[[:space:]]+[^;&|]*" | sed -E 's/^[^gG]*[gG][hH]([.][a-zA-Z]+)?[[:space:]]+//')
 fi
 
 # --- 4. Schreibzugriff auf geschützte Pfade über die Shell ---------------
@@ -495,24 +593,62 @@ done <<< "$UMLEITUNGSZIELE"
 # `cmd`, `vim`, `sponge` standen gar nicht darin (Befund M-11). Ergänzt, ohne
 # die Bedingung "nur mit Inline-Schalter" aufzuweichen — die verhindert genau
 # die Fehlalarme, die Abweichung E10 beseitigt hat.
+# Die Befehlsworte werden ab jetzt OHNE Rücksicht auf Gross- und Kleinschreibung
+# gesucht. Auf NTFS löst `SED` dieselbe Datei auf wie `sed` — `type -a SED`
+# liefert /usr/bin/SED, und `SED --in-place 1d test/x.test.js` hat im Review
+# eine verfolgte Testdatei geändert, während der Guard 0 zurückgab (Befund
+# M-2). Eine Pfadregel, die eine Umschalttaste weit von "aus" entfernt ist, ist
+# keine.
 SCHREIBEND_IMMER="${G}(tee|dd|truncate|shred|install|rsync|ed|ex|vi|vim|nvim|emacs|sponge|xargs)${GR}"
-SCHREIBEND_PFAD="${G}(rm|mv|cp|touch|chmod|chown|ln|mkdir|copy|move|del|erase)${GR}"
-INTERPRETER="${G}([gmn]?awk|sed|perl|python[0-9.]*|py|node|deno|bun|ruby|php|pwsh|powershell|cmd|osascript)${GR}"
-INLINE_SCHALTER='(^|[[:space:]])--?[a-zA-Z]*(i|c|e)([[:space:]]|=|$)|(^|[[:space:]])-(Command|EncodedCommand)([[:space:]]|$)'
+SCHREIBEND_PFAD="${G}(rm|mv|cp|touch|chmod|chown|ln|mkdir|copy|move|del|erase|robocopy|xcopy|certutil)${GR}"
+# Programme, die ihr Ziel als OPTION tragen statt als Argument. Ein
+# "curl -o loop.sh" laedt aus dem Netz und schreibt dabei jede Datei, die man
+# ihm nennt; im Muster fuer Schreibbefehle stand es nie, weil curl fuer sich
+# genommen nichts schreibt. Der Pfad steht in der Zeile, also kann die
+# Pfadpruefung ihn beurteilen -- es fehlte nur der Anlass, sie zu starten.
+SCHREIBEND_NETZ="${G}(curl|wget|aria2c|iwr|invoke-webrequest|bitsadmin)${EXE}${GR}"
+NETZ_ZIEL='(^|[[:space:]])(-o|-O|-{1,2}(output|output-document|outfile|remote-name)|/transfer)([[:space:]]|=|$)'
+# PowerShell ist die zweite Shell dieses Rechners, und der Matcher in
+# settings.json führt sie seit A8 mit — nur kannte dieses Skript kein einziges
+# ihrer Schreibverben. `Set-Content .claude/settings.json`,
+# `Remove-Item -Recurse -Force .agents/hooks` und
+# `[IO.File]::WriteAllText('loop.sh','')` gingen alle durch (Befund M-1).
+SCHREIBEND_PS="${G}(set-content|add-content|out-file|clear-content|new-item|remove-item|move-item|copy-item|rename-item|set-itemproperty|remove-itemproperty|new-itemproperty|export-csv|export-clixml|tee-object|start-bitstransfer|new-object)${GR}|\[[a-zA-Z.]*io\.[a-zA-Z]+\]::[a-zA-Z]+|(streamwriter|filestream|binarywriter)"
+INTERPRETER="${G}([gmn]?awk|sed|perl|python[0-9.]*|py|node|deno|bun|ruby|php|pwsh|powershell|cmd|osascript)${EXE}${GR}"
 # Ein Interpreter, der sein Programm über die Standardeingabe bekommt, trägt
 # keinen Schalter: `python - <<< "open('loop.sh','w')"` kam deshalb durch.
 STDIN_PROGRAMM='<<<|<<[[:space:]]*[A-Za-z_'"'"'"]'
 
 SCHREIBT=0
-im_befehl "$SCHREIBEND_IMMER" && SCHREIBT=1
-im_befehl "$SCHREIBEND_PFAD"  && SCHREIBT=1
-if im_befehl "$INTERPRETER" && { im_befehl "$INLINE_SCHALTER" || im_befehl "$STDIN_PROGRAMM"; }; then SCHREIBT=1; fi
+im_befehl_i "$SCHREIBEND_IMMER" && SCHREIBT=1
+im_befehl_i "$SCHREIBEND_PFAD"  && SCHREIBT=1
+im_befehl_i "$SCHREIBEND_PS"    && SCHREIBT=1
+if im_befehl_i "$SCHREIBEND_NETZ" && im_befehl_i "$NETZ_ZIEL"; then SCHREIBT=1; fi
+if im_befehl_i "$INTERPRETER" \
+   && { im_befehl "$INLINE_SCHALTER" || im_befehl_i "$INLINE_LANG" || im_befehl "$STDIN_PROGRAMM"; }
+then SCHREIBT=1; fi
 
 if (( SCHREIBT )); then
   # Ein schreibender Befehl mit einem Ziel, das erst die Shell ausrechnet
   # (`sed -i 1d ${TEST}`, `rm $(cat liste)`), ist aus demselben Grund nicht
   # prüfbar wie eine berechnete Umleitung. Gleiche Antwort.
-  if printf '%s' "$BEFEHL" | grep -qE '[$`]'; then
+  #
+  # Gemeint ist aber das Ziel DIESES Schreibbefehls. Vorher genügte ein `$`
+  # irgendwo in der Zeile, und weil ein Schreibwort auch irgendwo stehen durfte
+  # — auch mitten in einem Satz in Anführungszeichen —, waren drei gewöhnliche,
+  # rein lesende Befehle gesperrt (Befund M-13, im Betrieb dreimal aufgetreten
+  # und in QUESTIONS.md protokolliert):
+  #
+  #     echo "the copy of the guards is stale, see $HOME"
+  #     git log --oneline | grep -i "move the parser" | head -$N
+  #     echo "install notes here"; ls $PWD
+  #
+  # Deshalb wird der Befehl in einfache Befehle zerlegt — an Shell-Operatoren
+  # UND an Anführungszeichen — und die Frage nur für die Glieder gestellt, die
+  # mit einem Schreibwort ANFANGEN. Hinter einem Anführungszeichen steht
+  # entweder ein eingebetteter Befehl (`bash -c "sed -i …"`, `"sed" -i …`), und
+  # der steht dann ganz vorn, oder Prosa, und die fängt nicht mit `rm` an.
+  if schreibglied_mit_expansion; then
     echo "Blocked: this writing command computes its target at run time, so the guard cannot tell which file it touches. Name the file directly." >&2
     exit 2
   fi

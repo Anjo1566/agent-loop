@@ -245,7 +245,13 @@ test('an interpreter that merely NAMES a protected path is still refused', () =>
 
 test('interpreters that were missing from the list are covered', () => {
   blocks('guard-bash.sh', bashCall(`gawk -i inplace "NR>1" ${EXISTING_TEST_REL}`), 'gawk, not awk')
-  blocks('guard-bash.sh', bashCall(`sed -i 1d test/tasklist.tes\\t.js`), 'a backslash escape in the path')
+  // Der Pfad haengt an DIESER Datei, nicht am Beispielprojekt. Vorher stand
+  // hier test/tasklist.test.js -- und genau daran ist der Fall im Umzugs-
+  // Szenario durchgefallen, sobald abnahme.sh alle vier Guard-Testdateien
+  // mitnimmt: in einem fremden Repository gibt es diese Datei nicht, also ist
+  // sie auch kein verfolgter Test. Derselbe Fehler wie E11, eine Datei weiter.
+  blocks('guard-bash.sh', bashCall(`sed -i 1d ${EXISTING_TEST_REL.replace('.test.js', '.tes\\t.js')}`),
+    'a backslash escape in the path')
   blocks('guard-bash.sh', bashCall('sed -i 1d ${TEST}'), 'a target from a variable')
 })
 

@@ -451,3 +451,341 @@ brach mit »Branch main existiert nicht« ab, sobald man die Abnahme von einem
 Feature-Branch aus startete — also genau dann, wenn man sie am nötigsten
 braucht.
 **Änderung:** der Klon setzt `main` auf den geklonten Stand.
+
+---
+
+## F. Zyklus 2 — was das zweite adversariale Review umgestossen hat
+
+Das Review liegt als `REVIEW-1.md` im Wurzelverzeichnis. Es hat `agent-loop` mit
+5,5 und `agent-cockpit` mit 6,6 bewertet und das 8,5-Tor ausdrücklich für
+gescheitert erklärt. Dieser Abschnitt ist der Umbau danach: jeder Punkt mit dem
+Befund, der ihn ausgelöst hat, und mit der Prüfung, die ihn festhält.
+
+Zwei Dinge vorweg, weil sie den Rest einordnen.
+
+**Erstens: das Review hatte an zwei Stellen selbst zu viel behauptet.** Beide
+sind unten unter F13 aufgeführt und wurden nicht »behoben«, sondern
+richtiggestellt. Ein Umbau, der auch die falschen Befunde umsetzt, macht die
+Sache nicht besser, nur teurer.
+
+**Zweitens: der schwerste Befund brauchte keine einzige verbotene Operation.**
+Das ist die Lehre dieses Zyklus. Die Guards prüfen die Absicht, die in einer
+Kommandozeile steht; sie werden nie fertig. Was fehlte, war die Prüfung am
+Ergebnis — dieselbe Antwort, die E4 schon für die Tests gegeben hatte, jetzt
+auch für die Schutzdateien selbst.
+
+---
+
+### F1 — Beide Schutzschichten waren aus der Runde heraus abräumbar (Blocker)
+
+**Befund B-1.** `Write` auf `tools/helper.js` ist erlaubt. `node tools/helper.js`
+ist erlaubt — in-Repo-Skripte sind bewusst erlaubt, weil sie im Diff stehen. Der
+Helfer schreibt dann `.claude/settings.json` und `.agents/hooks/guard-bash.sh`
+neu. Kein Hook sieht das: nichts davon geht durch `Edit`, `Write` oder ein
+Shell-Wort mit dem Pfad darin. Im Review in einem Klon nachgestellt, mit
+Vorher/Nachher-Ausgabe.
+
+Der Rauchtest in `loop.sh` lief **einmal**, vor der ersten Runde. Jede weitere
+Runde des Laufs lief danach ohne deny-Liste und ohne Guards.
+
+**Änderung.** `loop.sh` bildet vor der ersten Runde eine `sha256`-Prüfsumme über
+alles, was den Lauf schützt, und rechnet sie **vor jeder weiteren Runde** nach.
+Zusätzlich wird der Rauchtest jede Runde wiederholt, und der Diff der Runde wird
+gegen `MUSTER_SELBST` und `MUSTER_DEPS` geprüft — die Prüfsumme fängt, was auf
+der Platte liegen bleibt, der Diff benennt, was mitcommittet wurde.
+
+Damit ist der Weg nicht verschlossen, sondern folgenlos: die Runde, in der er
+benutzt wird, ist die letzte, und der Grund steht im Pull Request. Das ist die
+einzige Zusage, die ein Hook-System dieser Bauart überhaupt geben kann.
+
+Belegt in `abnahme.sh` mit drei Szenarien (ABNAHME Punkt 9), darunter der Fall
+ohne Commit, den nur die Prüfsumme sieht.
+
+### F2 — PowerShell war unbewacht, obwohl der Matcher sie führt (Major)
+
+**Befund M-1.** `settings.json` matcht seit A8 auf `Bash|PowerShell`; das Review
+hat direkt geprüft, dass der Hook bei einem PowerShell-Aufruf feuert. Das Skript
+kannte aber kein einziges PowerShell-Verb. `Set-Content .claude/settings.json`,
+`Remove-Item -Recurse -Force .agents/hooks`, `Clear-Content loop.sh` und
+`[IO.File]::WriteAllText('loop.sh','')` gaben alle 0 zurück — auf Windows ein
+zweiter vollständiger Weg zu F1, ohne Helferdatei und ohne Spur im Diff.
+
+**Änderung.** `SCHREIBEND_PS` mit den Schreibverben und der .NET-Datei-API.
+Neun Fälle in `test/guards-cycle2.test.js`.
+
+### F3 — Die Befehlsworte waren case-sensitiv, NTFS ist es nicht (Major)
+
+**Befund M-2.** `type -a SED` liefert auf diesem Rechner `/usr/bin/SED`.
+`SED --in-place 1d test/guards.test.js` hat im Review eine verfolgte Testdatei
+geändert, während der Guard 0 zurückgab.
+
+**Änderung.** Alle Befehlswortmuster laufen über `im_befehl_i`. Die
+**Schalter**muster ausdrücklich nicht: `-e` ist Code, `-E` ist erweiterte
+Regex. Diese Unterscheidung ist beim Umbau einmal verlorengegangen, und sofort
+war ein völlig gewöhnliches `node --test | grep -E …` blockiert. Der Kommentar
+im Skript sagt jetzt, warum die eine Hälfte case-insensitiv ist und die andere
+nicht.
+
+### F4 — `sed --in-place` und `bash.exe` (Major)
+
+**Befunde M-3 und M-4.** Das Muster für den In-place-Schalter suchte `(c|e)`
+direkt vor Leerzeichen oder `=`; in `--in-place` steht das `e` mitten im Wort.
+Und die rechte Wortgrenze endet nicht auf einem Punkt, also traf `bash.exe
+/tmp/evil.sh` kein Interpretermuster — die Regel »kein Skript von ausserhalb des
+Projekts« war auf der dokumentierten Plattform aus.
+
+**Änderung.** Lange Schreibweisen im Schaltermuster, `${EXE}` in jeder
+Interpreterliste. Beim Arbeiten fiel die dritte Variante derselben Lücke auf:
+`C:\Program Files\nodejs\node.exe skript.js` traf ebenfalls nichts, weil der
+Backslash nicht in der linken Wortgrenze war. Auch das ist behoben.
+
+### F5 — Werkzeuge, deren Ziele nicht im Befehl stehen (Major)
+
+**Befund M-8.** `patch` und `git apply` werden rundheraus abgelehnt, weil der
+Guard ihre Pfade nicht sieht. `tar -xf`, `unzip -o`, `cpio -i` und
+`xargs -a liste rm` tun dasselbe und standen in keinem Muster. `awk` mit einem
+berechneten Umleitungsziel ebenfalls.
+
+**Änderung.** Dieselbe Ablehnung, dieselbe Begründung. `tar -c` bleibt erlaubt:
+geprüft wird auf einen Auspack-Schalter, und `--exclude` trifft ihn nicht.
+
+### F6 — `git checkout -f` und Verwandte (Major)
+
+**Befund M-9.** Die Regel gegen »Arbeit wegwerfen« kannte `stash`, `clean`,
+`restore`, `reset --hard` und `checkout -- <datei>`, aber nicht `checkout -f`,
+`switch -f` oder `switch --discard-changes`.
+
+**Änderung.** Ergänzt. Und in die andere Richtung entschärft: das alte Muster
+verlangte hinter dem Ref nur die Zeichen `--`, und die stehen am Anfang jeder
+langen Option — `git checkout main --quiet`, ein blosser Branchwechsel, war
+blockiert. `--` muss jetzt ein eigenes Wort sein.
+
+### F7 — Der Testbefehl hatte keine Zeitgrenze (Major)
+
+**Befund M-5.** Der Wachhund bewacht die Sitzung und wird beendet, sobald `wait`
+zurückkommt. Der Testbefehl läuft **danach** — und führt Code aus, den der Agent
+selbst geschrieben hat. Eine neue Testdatei anzulegen ist ausdrücklich erlaubt;
+eine, die synchron dreht, hängte `node --test` unbegrenzt. Im Review gemessen:
+nach 75 s lief sie noch.
+
+Das ist genau die Havarie, für die der Wachhund geschrieben wurde — vier Stunden
+an einem toten Kind —, achtzig Zeilen weiter unten wieder offen.
+
+**Änderung.** `mit_zeitgrenze` (ohne Abhängigkeit von `timeout`, mit demselben
+`toete_baum` wie der Wachhund) um `TESTBEFEHL` und `TESTZAEHLER`, gesteuert über
+das neue `MAX_TEST`. Rückgabewert 124 unterscheidet den Abbruch von einer roten
+Suite.
+
+Dieser Befund hat sich während des Umbaus selbst noch einmal bewiesen: die
+Abnahme lief in genau dieses Szenario und blieb hängen, weil der Klon (siehe
+F11) noch das alte `loop.sh` ohne `MAX_TEST` hatte.
+
+### F8 — Die Note war eine Selbstauskunft (Major)
+
+**Befund M-6.** `.agents/grade.json` schreibt der Chef selbst, und
+`protected-paths.sh` schützt nur `.agents` und `.agents/hooks`. Die
+Abbruchbedingung des ganzen Laufs — »Zielnote erreicht« — hing an einer Datei,
+die das bewertete Modell schreibt. `CLAUDE.md` behauptete dabei ausdrücklich,
+das Skript entscheide.
+
+**Änderung.** `loop.sh` liest die Note aus dem Ereignisstrom der Runde: erst die
+`tool_use_id` jedes Subagenten vom Typ `grader` (`system/task_started`), dann das
+`tool_result` mit genau dieser id. Beides schreibt die CLI, nicht das Modell.
+`grade.json` bleibt als Ablage für das Cockpit; weicht sie ab, wird das benannt
+und die Zahl aus dem Strom gewertet.
+
+`CLAUDE.md` und `round.md` sagen jetzt, wie es wirklich funktioniert. Drei
+Szenarien in `abnahme.sh` (ABNAHME Punkt 10).
+
+### F9 — Zwei Läufe im selben Arbeitsverzeichnis (Major)
+
+**Befund M-14.** `loop.sh` hatte keine Sperre. Die Sauberkeitsprüfung läuft
+**vor** dem Branchwechsel, und ein regelkonformer Lauf hat zwischen zwei Runden
+immer alles committet — der zweite Lauf sähe also einen sauberen Baum, führte
+`git switch main` aus und zöge dem ersten den Checkout weg. Dessen nächster
+Commit landete auf `main`.
+
+**Änderung.** `.agents/loop-laeuft.pid`, geprüft in der Vorprüfung, aufgeräumt
+per `trap`. Eine Leiche blockiert nicht, sie wird gemeldet und überschrieben.
+Ausserdem bekommen zwei Läufe in derselben Minute nicht mehr denselben
+Branchnamen; vorher endete der zweite mit `git`s Rohmeldung, nachdem der
+Checkout schon auf `main` stand.
+
+### F10 — Die Guards veralten still in kopierten Projekten (Major)
+
+**Befund M-7**, und der einzige, der schon einen Schaden angerichtet hatte:
+`agent-cockpit` lief acht echte Runden mit einer Guard-Fassung, die 10 von 15
+gefährlichen Nutzlasten durchliess — darunter `rm -rf .agents/hooks`, nach dem
+jeder Hook-Aufruf 127 liefert, und 127 blockiert **nicht**. Von aussen war das
+nicht von einem gesunden Projekt zu unterscheiden.
+
+**Änderung, in drei Teilen:**
+
+1. `protected-paths.sh` trägt `SCHUTZ_VERSION`. `loop.sh` kennt die Fassung, die
+   es braucht, und verweigert den Start bei Rückstand.
+2. Das Cockpit zeigt die Fassung je Projekt in der Projektliste und markiert
+   Rückstände.
+3. Das Cockpit kann sie nachziehen (`projekte.aktualisiere`). Der Loop war
+   vorher eine Einbahnstrasse: einrichten ja, aktualisieren nein.
+
+`agent-cockpit` ist damit von Fassung 0 auf 2 gebracht; dieselben 15 Nutzlasten
+werden dort jetzt alle blockiert. Gemessen, beide Fassungen, vorher/nachher.
+
+### F11 — Die Abnahme prüfte den letzten Commit, nicht den Arbeitsstand
+
+Nicht aus dem Review, sondern beim Umbau aufgefallen und schwerer als das meiste
+darin: `git clone` von einem lokalen Pfad nimmt den HEAD-Commit. `abnahme.sh`
+prüfte damit die zuletzt committete Fassung von `loop.sh`, während das README
+sagt »nach jeder Änderung an `loop.sh` einmal laufen lassen«. Genau im Moment,
+in dem man sie braucht, prüfte sie das Falsche.
+
+**Änderung.** Jeder Szenarienklon bekommt die Arbeitsstände aller verfolgten
+Dateien kopiert und committet.
+
+### F12 — Die Abnahme lief zweieinhalb Stunden statt »ein paar Minuten«
+
+**Befund M-11.** Das README versprach »ein paar Minuten«; gemessen waren es über
+zweieinhalb Stunden, und niemand lässt so etwas nach jeder Änderung laufen. Die
+Ursache: 55 Guard-Fälle, jeder ein eigener `bash`-Prozess, zusammen 165 s — und
+`loop.sh` fährt die Suite einmal vor dem Lauf und einmal je Runde, über 19
+Szenarien.
+
+**Änderung, zwei Teile:**
+
+1. Die Szenarienklone lassen die Guard-Tests weg. Sie prüfen die Guards, nicht
+   die Schleifenlogik. Bewiesen bleiben die Guards zweimal: `node --test` im
+   echten Repository und das Umzugs-Szenario, das ein fremdes Repository aus der
+   README-Liste baut und sie dort noch einmal fährt.
+2. `count-tests.sh` liest die Testanzahl aus `.agents/testrun.txt` — der
+   TAP-Ausgabe des Laufs, den `loop.sh` in derselben Runde ohnehin schon gemacht
+   hat — statt die Suite ein zweites Mal zu fahren. Es misst nach, wenn unter
+   `test/` etwas jünger ist als diese Datei.
+
+Damit halbiert sich auch die Wartezeit jeder echten Runde. `abnahme.sh` gibt
+seine Laufzeit jetzt selbst aus, und in ABNAHME.md steht die gemessene Zahl.
+
+### F13 — Zwei Befunde des Reviews waren falsch, einer war unvollständig
+
+Der Umbau setzt nicht um, was nicht stimmt. Alle drei stehen hier, weil ein
+stillschweigend übergangener Befund vom nächsten Review wieder gefunden wird.
+
+**Falsch, B1 »Der GESPERRT-Tafel überlappt den CODER-Knoten bei 1280 px«.** Die
+Zeichnung liegt in einem SVG mit `viewBox` und `preserveAspectRatio`; sie
+skaliert gleichförmig, eine breitenabhängige Kollision kann es dort gar nicht
+geben. Nachgemessen: Tafel endet bei y≈430, der Knoten beginnt bei y≈462. Keine
+Überlappung, bei keiner Breite.
+
+**Falsch, B1 »Der Ereignisstrom schneidet die Guard-Meldung mitten im Wort
+ab«.** Das war ein Artefakt der Aufnahme: der Screenshot lief mit angehaltener
+virtueller Zeit, und die Aufdeck-Animation war mittendrin eingefroren. Mit
+`--force-prefers-reduced-motion` steht der Text vollständig da und bricht um.
+
+**Unvollständig, B1 »Ereigniszeilen ohne Text«.** Dieselbe Aufnahme, aber hier
+lag ein echter Fehler dahinter: der Ruhezustand von `.zeile .inhalt` war
+`clip-path: inset(0 100% 0 0)` — also unsichtbar —, und nur eine Animation, die
+wirklich durchläuft, holte den Inhalt zurück. Fällt sie aus, bleibt die Zeile
+für immer leer. Die Animationen laufen jetzt **von** unsichtbar **nach**
+sichtbar, ohne `forwards`; der Ruhezustand ist der sichtbare. Dasselbe für die
+Blätter, die Taktbalken und das Raster.
+
+Und einer, den das Review benannt, aber falsch gelöst hat: **`node --run` gehört
+nicht auf die Sperrliste.** `npm exec` und `pnpm dlx` laden ein fremdes Paket und
+sind damit `npx` unter anderem Namen — gesperrt. `node --run` und `npm test`
+führen aus, was in `package.json` steht, und `package.json` ist für den Agenten
+unveränderbar. Sie zu sperren hätte nur den Testlauf des Coders zerschlagen.
+
+Ebenso **die Pflicht zur Freigabe auf `main`** (Befund M-10): auf einem
+Ein-Personen-Konto kann niemand den eigenen Pull Request freigeben, der Besitzer
+hätte sich ausgesperrt. Was stattdessen geht, ist eine Pflicht zur grünen Suite;
+`.github/workflows/tests.yml` liegt bei, der Befehl zum Scharfschalten steht als
+Kommentar darin, und ABNAHME.md sagt ausdrücklich, dass der Workflow auf diesem
+Rechner nie gelaufen ist.
+
+### F14 — Falschmeldungen, die im Betrieb Runden gekostet haben
+
+**Befund M-13**, und der einzige mit Vorfällen aus dem echten Betrieb: drei
+Einträge in `agent-cockpit/QUESTIONS.md`, zweimal musste eine Commit-Botschaft
+umformuliert werden. `SCHREIBT` wurde gesetzt, sobald irgendwo ein englisches
+Wort aus der Liste stand — auch mitten in einem Satz in Anführungszeichen — und
+dann genügte ein `$` irgendwo in der Zeile für eine Absage.
+
+**Änderung.** Die Zeile wird in einfache Befehle zerlegt, an Shell-Operatoren
+**und** an Anführungszeichen, und die Frage »ist das Ziel berechnet?« nur für
+die Glieder gestellt, die mit einem Schreibwort **anfangen**. Hinter einem
+Anführungszeichen steht entweder ein eingebetteter Befehl (`bash -c "sed -i …"`,
+`"sed" -i …`) — und der steht dann ganz vorn — oder Prosa, und die fängt nicht
+mit `rm` an.
+
+Die Regel selbst bleibt scharf: `sed -i 1d ${TEST}` und `rm $(cat liste)` sind
+weiter gesperrt. Fünf Fälle in jede Richtung in `test/guards-cycle2.test.js`.
+
+### F15 — Der Reviewer hatte keinen Grund, etwas zu finden
+
+**Befund A4.** In der beobachteten Runde 8 meldete der Reviewer »PASS, no
+blockers« auf einem Repository, das der grader unmittelbar danach mit 6,8 und
+sechs benannten Mängeln bewertete.
+
+**Änderung.** `reviewer.md` bekommt drei Dinge, die es vorher nicht hatte: es
+liest zuerst den Diff (nicht die Zusammenfassung des Coders), es bekommt seine
+eigenen Befunde der letzten Runde zurück und muss zu jedem sagen, was daraus
+geworden ist, und es muss einen neuen Test aktiv zum Scheitern zu bringen
+versuchen. Ein »NO FINDINGS« muss ausserdem in einer Zeile sagen, was am
+härtesten geprüft wurde — damit die nächste Runde weiss, wo nicht hingesehen
+wurde. `round.md` gibt ihm den Commit-Bereich und die alten Befunde mit.
+
+### F16 — Grenzen, die nicht greifen konnten
+
+**Befund A2.** `MAX_TURNS=200` und `MAX_BUDGET_USD=15` gegen elf gemessene echte
+Runden, deren teuerste 31 Turns und 2,56 USD brauchte: beide »Notbremsen«
+konnten gar nicht auslösen, bevor eine andere zuschlug.
+
+**Änderung.** 60 und 4 — etwa das Doppelte des gemessenen Maximums. Die Zahlen
+und ihre Herkunft stehen als Kommentar in `loop.sh` und in ABNAHME.md.
+
+Ausserdem prüft `loop.sh` die Suite jetzt **vor** dem Lauf und verweigert den
+Start auf roter Ausgangslage: die Reparaturrunde repariert dort etwas, das der
+Agent nicht verursacht hat, und verbrennt dafür ein Kontingent.
+
+### F17 — Das Cockpit
+
+Aus demselben Review, kurz:
+
+- **`Origin: null` wurde durchgelassen** (M-15). Ein Sandbox-Iframe hat einen
+  undurchsichtigen Ursprung und schickt genau das; zusammen mit einem Formular
+  mit `enctype="text/plain"` war das ein vollständiger Weg von einer beliebigen
+  Webseite zu `/api/tasks` und `/api/start`. Die Zusicherung im Test stand
+  falsch herum und ist ersetzt.
+- **Zu grosse Rümpfe rissen die Verbindung ab** (M-16). `anfrage.destroy()`
+  zerstört in Node immer den Socket, und Anfrage und Antwort teilen sich diesen
+  einen — der Aufrufer bekam ECONNRESET statt der 400. Auch hier stand die
+  Zusicherung falsch herum (sie verlangte den `destroy()`-Aufruf) und ist durch
+  die strengere ersetzt: der Socket darf **nicht** abgerissen werden. Die
+  Meldung nennt jetzt die Grenze.
+- **Kein Verlauf der Note** (C-1). `notenband` wurde gesammelt und nirgends
+  gezeichnet. Jetzt steht es als Treppe über dem Rundenband, mit der Zielnote
+  als gestrichelter Linie — die einzige Ansicht, die sagt, ob ein Lauf
+  irgendwohin kommt. Der Probelauf (`?probe=1`) zeigt es mit.
+- **Kein Wiederanhängen** (C-4). Ein neu gestartetes Cockpit zeigte »BEREIT«,
+  während im Projekt eine Runde lief. Jetzt hängt es sich an — an den eigenen
+  Merker oder an `loop.sh`s Sperre — und sagt dabei, dass ihm der Anfang fehlt.
+- **Der Ereigniszähler zählte DOM-Knoten** (m-1) und blieb ab der 220. Zeile
+  stehen. Jetzt zählt er Ereignisse.
+- **Kontrast** (B1). `--text-ghost` lag bei 2,0:1, `--text-low` bei 3,5:1 — beides
+  Fliesstext. Jetzt 4,6:1 und 5,6:1.
+- **`sonnet · high` passte nicht in seine Zelle** (B1). Eigene Laufweite.
+- **Ein offener Dateideskriptor je Lesefehler** (m-2), alle 180 ms. `try/finally`.
+
+### F18 — Was nicht geändert wurde
+
+- **Der Container** ist weiterhin nicht gebaut. Ohne ihn bleibt die
+  Sicherheitsgrenze das, was F1 daraus macht: nicht »unmöglich«, sondern
+  »folgenlos und benannt«. ABNAHME.md sagt das unverändert.
+- **`--allowedTools`** bleibt wirkungslos im Skript stehen, als
+  Absichtserklärung. Unverändert seit Abschnitt D.
+- **`installiere()` committet mit `--no-verify`** (m-3). Das ist die
+  Einrichtung, die der Nutzer selbst auslöst, nicht der Agent; ein pre-commit
+  hook des Zielprojekts würde hier über Dateien laufen, die es noch gar nicht
+  kennt. Bewusst so gelassen, jetzt mit Kommentar.
+- **`git bundle`, `git daemon`, `git send-email`, `git credential`** sind neu
+  gesperrt, `git revert`, `git rebase` und `git cherry-pick` nicht: sie schreiben
+  Commits, und Commits sieht der Diff der Runde. Die Bremsen greifen dort.

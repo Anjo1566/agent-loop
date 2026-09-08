@@ -1,0 +1,60 @@
+# Die Testsuite auf jedem Push und jedem Pull Request.
+#
+# Warum es das gibt: der Branch-Schutz auf `main` verlangt einen Pull Request,
+# aber keine Freigabe (`required_approving_review_count: 0`) und keine
+# Statuspruefung. Er stellt also sicher, dass ein Pull Request EXISTIERT, nicht
+# dass ihn jemand gelesen hat -- und ein Lauf, der die Guards loswird, koennte
+# seinen eigenen Pull Request mergen.
+#
+# Eine Pflicht zur Freigabe hilft hier nicht: auf einem Ein-Personen-Konto kann
+# niemand den eigenen Pull Request freigeben, und der Besitzer haette sich
+# selbst ausgesperrt. Eine Pflicht zu einer gruenen Suite dagegen schon --
+# niemand muss dafuer wach sein, und sie prueft genau das, was ein entgleister
+# Lauf faelschen wuerde.
+#
+# Scharf schalten, NACHDEM dieser Workflow einmal gruen durchgelaufen ist:
+#
+#   gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_checks \
+#     -f strict=true -f 'contexts[]=node --test'
+#
+# Vorher nicht: eine Pflichtpruefung, die nie gelaufen ist, blockiert jeden
+# Merge auf Dauer.
+#
+# Dieser Workflow ist auf dem Rechner des Autors NICHT gelaufen -- dort gibt es
+# kein Linux und keine Actions-Umgebung. Der erste Push zeigt, ob die Guard-
+# Tests auch dort durchlaufen; bis dahin ist er mitgeliefert, nicht bewiesen.
+# Dasselbe steht in ABNAHME.md unter "Nicht gemessen".
+
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    name: node --test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Die Guards blockieren fail-closed, wenn jq fehlt -- dann wuerde jeder
+      # "allows"-Fall der Suite fehlschlagen. Auf ubuntu-latest ist jq dabei;
+      # diese Zeile sorgt dafuer, dass ein Fehlen sofort auffaellt statt als
+      # rote Testsuite.
+      - name: jq vorhanden
+        run: jq --version
+
+      # Die Guard-Tests fragen `git ls-files`, ob eine Testdatei verfolgt ist.
+      # Ohne echtes Repository waere die Antwort leer und die Haelfte der Suite
+      # wuerde nichts pruefen.
+      - name: Testdateien sind verfolgt
+        run: git ls-files test/
+
+      - name: Suite
+        run: node --test --test-reporter=tap

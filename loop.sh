@@ -2,17 +2,25 @@
 set -euo pipefail
 
 # --- Vom Umsetzer auszufüllen -------------------------------------------
-TESTBEFEHL="node --test"                      # muss bei Fehlschlag != 0 liefern
+TESTBEFEHL="node --test --test-reporter=tap"  # muss bei Fehlschlag != 0 liefern
 TESTZAEHLER="./.agents/hooks/count-tests.sh"  # gibt die Anzahl Tests als Zahl aus
-MAX_TURNS=200               # harter Deckel pro Runde
+MAX_TURNS=60                # harter Deckel pro Runde
 MAX_OPUS_RUNDEN=5           # so viele Eskalationsrunden auf Opus pro Lauf
-MAX_BUDGET_USD=15           # dritte Notbremse pro Runde, Listenpreis-Schätzung
+MAX_BUDGET_USD=4            # dritte Notbremse pro Runde, Listenpreis-Schätzung
 MAX_LEERRUNDEN=2            # so viele Runden ohne Codeänderung, dann Abbruch
 BASIS_BRANCH="main"         # Zielbranch des Pull Requests
 ZIELNOTE=8.5                # ab dieser Gesamtnote ist der Auftrag erledigt
 MAX_STILLE=600              # so lange darf der Ereignisstrom stillstehen
 MAX_RUNDE=3600              # harte Zeitgrenze pro Runde, egal wie fleissig
+MAX_TEST=1800               # Zeitgrenze für Testbefehl und Testzähler
 # ------------------------------------------------------------------------
+#
+# MAX_TURNS und MAX_BUDGET_USD standen auf 200 und 15. Gemessen an elf echten
+# Runden (drei hier, acht in agent-cockpit) brauchte die teuerste 31 Turns und
+# 2,56 USD; die beiden "Notbremsen" konnten also gar nicht greifen, bevor eine
+# der anderen zuschlug. Jetzt liegen sie etwa beim Doppelten des gemessenen
+# Maximums — weit genug für eine ungewöhnliche Runde, eng genug, um eine
+# entgleiste zu beenden. Die Zahlen stehen in ABNAHME.md.
 #
 # Beide Befehle laufen über `bash -c`, dürfen also Pipes, Anführungszeichen und
 # Umleitungen enthalten. Der Zähler muss immer eine Zahl ausgeben und immer mit
@@ -53,17 +61,51 @@ for H in guard-files guard-bash protected-paths; do
   [[ -r ".agents/hooks/$H.sh" ]] || fehler ".agents/hooks/$H.sh fehlt oder ist nicht lesbar."
 done
 
+command -v sha256sum >/dev/null || fehler "sha256sum fehlt. Ohne Prüfsumme lässt sich nicht feststellen, ob eine Runde die Schutzdateien verändert hat."
+
 # Dieselben Muster wie die Guards. Sie werden unten am Diff der Runde gebraucht.
 # shellcheck source=.agents/hooks/protected-paths.sh
 . ./.agents/hooks/protected-paths.sh || fehler "Die Pfadmuster liessen sich nicht laden."
 
+# Der Schutzsatz wird kopiert, wenn der Loop in ein anderes Repository zieht,
+# und veraltet dort still. Genau das ist passiert: agent-cockpit lief acht
+# echte Runden mit einer Fassung, die `rm -rf .agents/hooks` durchliess — was
+# jeden weiteren Hook-Aufruf auf 127 laufen lässt, und 127 blockiert nicht.
+# Von aussen war das nicht zu sehen. Deshalb trägt protected-paths.sh eine
+# Versionsnummer, und loop.sh weiss, welche es braucht.
+SCHUTZ_VERSION_ERWARTET=2
+if [[ "${SCHUTZ_VERSION:-0}" -lt "$SCHUTZ_VERSION_ERWARTET" ]]; then
+  fehler "Die Schutzdateien in .agents/hooks/ sind älter als dieses loop.sh (Version ${SCHUTZ_VERSION:-0}, gebraucht $SCHUTZ_VERSION_ERWARTET). Hol dir .agents/hooks/ und .claude/ aus dem Scaffold nach — im Cockpit macht das der Knopf 'Aktualisieren'."
+fi
+
+# --- Nur ein Lauf je Arbeitsverzeichnis ---------------------------------
+# Zwei Läufe im selben Arbeitsbaum kommen sich nicht bloss in die Quere: die
+# Sauberkeitsprüfung unten läuft VOR dem Branchwechsel, und ein regelkonformer
+# Lauf hat zwischen zwei Runden immer alles committet. Der zweite Lauf sähe
+# also einen sauberen Baum, würde `git switch main` ausführen und dem ersten
+# den Checkout unter den Füssen wegziehen — dessen nächster Commit landete auf
+# main. Das Cockpit hatte dafür längst einen Merker; loop.sh hatte keinen.
+SPERRE=".agents/loop-laeuft.pid"
+if [[ -f "$SPERRE" ]]; then
+  ALT=$(cat "$SPERRE" 2>/dev/null || echo)
+  if [[ -n "$ALT" ]] && kill -0 "$ALT" 2>/dev/null; then
+    fehler "In diesem Arbeitsverzeichnis läuft bereits ein Lauf (Prozess $ALT). Warte, bis er fertig ist, oder beende ihn."
+  fi
+  echo "Hinweis: $SPERRE stammt von einem abgebrochenen Lauf (Prozess ${ALT:-?}) und wird überschrieben."
+fi
+
 # Rauchtest: ein fingierter Payload muss Exit 2 liefern. Ein Guard, der 126
 # oder 127 liefert (Datei weg, Interpreter weg, jq weg), blockiert NICHT —
 # und genau das würde man im Lauf nicht bemerken.
-pruefe_guard() {
-  local skript="$1" payload="$2" name="$3" rc=0
+pruefe_guard_still() {
+  local skript="$1" payload="$2" rc=0
   printf '%s' "$payload" | bash ".agents/hooks/$skript" >/dev/null 2>&1 || rc=$?
-  (( rc == 2 )) || fehler "$name blockiert nicht (Rückgabewert $rc statt 2). Die Schutzmechanismen sind aus."
+  (( rc == 2 ))
+}
+pruefe_guard() {
+  local skript="$1" payload="$2" name="$3"
+  pruefe_guard_still "$skript" "$payload" \
+    || fehler "$name blockiert nicht. Die Schutzmechanismen sind aus."
 }
 pruefe_guard guard-files.sh \
   "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$PWD/.claude/settings.json\"}}" \
@@ -102,12 +144,62 @@ else
   fehler "Branch $BASIS_BRANCH existiert nicht."
 fi
 
+# Zwei Läufe in derselben Minute bekamen denselben Namen; `git checkout -b`
+# endete dann mit 128, und `set -e` beendete das Skript mit git's Rohmeldung —
+# nachdem der Checkout schon auf main stand. Jetzt wird durchgezählt.
 ZWEIG="agent/$(date +%Y%m%d-%H%M)"
-git checkout -b "$ZWEIG" --quiet
+if git show-ref --verify --quiet "refs/heads/$ZWEIG"; then
+  for N in 2 3 4 5 6 7 8 9; do
+    git show-ref --verify --quiet "refs/heads/$ZWEIG-$N" || { ZWEIG="$ZWEIG-$N"; break; }
+  done
+fi
+git checkout -b "$ZWEIG" --quiet \
+  || fehler "Branch $ZWEIG liess sich nicht anlegen. Der Checkout steht jetzt auf $BASIS_BRANCH."
 
 mkdir -p .agents
 rm -f .agents/STOP .agents/next-round.json .agents/grade.json
 : > .agents/run.log
+
+echo "$$" > "$SPERRE"
+aufraeumen() { rm -f "$SPERRE"; }
+trap aufraeumen EXIT
+
+# --- Die Schutzdateien, wie sie beim Start aussahen ----------------------
+#
+# Das schwerste Loch des Reviews (Befund B-1) brauchte keine einzige verbotene
+# Operation: `Write` auf tools/helper.js ist erlaubt, `node tools/helper.js`
+# ist erlaubt — und der Helfer schreibt dann .claude/settings.json und
+# .agents/hooks/guard-bash.sh neu. Kein Hook sieht das, weil nichts davon
+# durch Edit, Write oder ein Shell-Wort mit dem Pfad darin geht. Danach lief
+# jede weitere Runde ohne deny-Liste und ohne Guards, weil der Rauchtest oben
+# nur EINMAL läuft.
+#
+# Die Antwort ist dieselbe wie bei E4: nicht die Absicht prüfen, sondern das
+# Ergebnis. Vor der ersten Runde wird eine Prüfsumme über alles gebildet, was
+# den Lauf schützt; vor jeder weiteren Runde wird sie nachgerechnet. Ein
+# Helfer, der die Guards abräumt, beendet damit den Lauf, statt ihn zu
+# übernehmen — und der Grund steht im Pull Request.
+schutzdateien() {
+  { git ls-files -- '.agents/hooks/*' '.claude/*' 'CLAUDE.md' 'round.md' \
+                    'loop.sh' 'abnahme.sh' '.gitattributes' '.mcp.json' \
+                    '.devcontainer/*' 2>/dev/null
+    # Nicht versioniert, aber massgeblich: eine settings.local.json überschreibt
+    # settings.json, und ohne sie hier wäre der teuerste Weg der unbewachte.
+    ls .claude/settings.local.json 2>/dev/null
+  } | sort -u
+}
+
+schutz_pruefsumme() {
+  local d
+  while IFS= read -r d; do
+    [[ -f "$d" ]] || { printf 'FEHLT %s\n' "$d"; continue; }
+    sha256sum -- "$d"
+  done < <(schutzdateien)
+}
+
+SCHUTZ_ANFANG=$(schutz_pruefsumme)
+[[ -n "$SCHUTZ_ANFANG" ]] \
+  || fehler "Es liess sich keine Prüfsumme über die Schutzdateien bilden."
 
 # QUESTIONS.md wird NICHT geleert. Die Charta erklärt sie für "appended to,
 # never shortened" — ein Lauf, der sie abschneidet, löscht die Entscheidungen
@@ -117,8 +209,43 @@ FRAGEN_VORHER=$(wc -l < QUESTIONS.md)
 
 zaehle_tests() {
   local roh
-  roh=$(bash -c "$TESTZAEHLER" 2>/dev/null | tr -dc '0-9\n' | tail -1)
+  roh=$(mit_zeitgrenze "$MAX_TEST" "$TESTZAEHLER" 2>/dev/null | tr -dc '0-9\n' | tail -1)
   [[ "$roh" =~ ^[0-9]+$ ]] && printf '%s' "$roh" || printf ''
+}
+
+# Der Testbefehl schreibt seine Ausgabe immer nach .agents/testrun.txt: die
+# Reparaturrunde zeigt sie dem Agenten, und der Zähler liest die Testanzahl
+# daraus, statt die Suite ein zweites Mal zu fahren. Bei 62 Tests, die auf
+# diesem Rechner 165 s brauchen, war das die Hälfte der gemessenen Wartezeit
+# je Runde.
+tests_ausfuehren() {
+  mit_zeitgrenze "$MAX_TEST" "$TESTBEFEHL" > .agents/testrun.txt 2>&1
+}
+
+# Die Note des graders aus dem Ereignisstrom der Runde.
+#
+# Gesucht wird zuerst die tool_use_id jedes Subagenten vom Typ "grader" und
+# dann das tool_result mit genau dieser id. Nur dessen Text wird nach "gesamt"
+# durchsucht — sonst genügte es, die Zahl irgendwo in eine Datei zu schreiben,
+# die der Chef anschliessend vorliest. Beides schreibt die CLI, nicht das
+# Modell.
+note_aus_strom() {
+  local datei="$1" ids text
+  [[ -s "$datei" ]] || return 0
+  ids=$(jq -r 'select(.type == "system" and .subtype == "task_started"
+                      and .subagent_type == "grader") | .tool_use_id // empty' \
+        "$datei" 2>/dev/null | grep -v '^$' | sort -u)
+  [[ -n "$ids" ]] || return 0
+  text=$(jq -r --arg ids "$ids" '
+      ($ids | split("\n")) as $g
+      | select(.type == "user")
+      | (.message.content // [])[]?
+      | select(.type == "tool_result" and ((.tool_use_id // "") | IN($g[])))
+      | (.content // [])[]?
+      | select(.type == "text") | .text' "$datei" 2>/dev/null)
+  printf '%s' "$text" \
+    | grep -oE '"gesamt"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' \
+    | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1
 }
 
 # --- Der Wachhund -------------------------------------------------------
@@ -154,6 +281,36 @@ toete_baum () {
   ( sleep 5; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
 }
 
+# Ein Befehl mit harter Zeitgrenze, ohne von `timeout` abzuhängen.
+#
+# Es gibt das, weil der Wachhund oben nur die Sitzung bewacht: er wird
+# beendet, sobald `wait` auf die Runde zurückkommt. Der Testbefehl läuft
+# DANACH — und er führt Code aus, den der Agent selbst geschrieben hat. Eine
+# Endlosschleife in einer Quelldatei, die ein Test aufruft, hängt `node --test`
+# unbegrenzt; nachgestellt mit einem neu angelegten Test (neue Testdateien
+# sind ausdrücklich erlaubt), der synchron dreht: nach 75 s lief er noch. Der
+# Lauf hätte gewartet, bis jemand hinsieht. Genau der Fall, für den der
+# Wachhund geschrieben wurde, achtzig Zeilen weiter unten wieder offen.
+#
+# Rückgabewert 124 wie bei `timeout`, damit die Auswertung unten den Abbruch
+# von einer roten Suite unterscheiden kann.
+mit_zeitgrenze() {
+  local grenze="$1" befehl="$2" pid rc=0 wartend=0
+  bash -c "$befehl" &
+  pid=$!
+  while (( wartend < grenze )); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 2; wartend=$((wartend + 2))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    toete_baum "$pid"
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid" || rc=$?
+  return "$rc"
+}
+
 # Der Grund steht in einer Datei, nicht im Rueckgabewert: ein abgeschossener
 # Prozess meldet unter Windows auch mal 0, und dann haette die Runde als
 # gelungen gegolten.
@@ -178,9 +335,25 @@ wachhund () {
   done
 }
 
+# Die Suite einmal vor dem Lauf. Zwei Dinge auf einmal: die Ausgangszahl für
+# die Bremse "Testanzahl gesunken", und die Gewissheit, dass die Suite
+# überhaupt grün startet. Auf einer roten Ausgangslage ist die Reparaturrunde
+# sinnlos — sie repariert dann etwas, das der Agent gar nicht verursacht hat,
+# und verbrennt dafür ein Kontingent.
+echo "Testsuite vor dem Lauf…"
+TEST_RC=0
+tests_ausfuehren || TEST_RC=$?
+if (( TEST_RC == 124 )); then
+  fehler "Der Testbefehl lief länger als MAX_TEST=$MAX_TEST s und wurde beendet. Ausgabe in .agents/testrun.txt."
+fi
+if (( TEST_RC != 0 )); then
+  fehler "Die Testsuite ist schon vor dem Lauf rot (Rückgabewert $TEST_RC). Ausgabe in .agents/testrun.txt. Erst reparieren, dann starten."
+fi
+
 TESTS_VORHER=$(zaehle_tests)
 [[ -n "$TESTS_VORHER" ]] \
   || fehler "TESTZAEHLER liefert keine Zahl. Die Bremse 'Testanzahl gesunken' wäre wirkungslos."
+echo "Ausgangslage: $TESTS_VORHER Tests, Suite grün."
 
 OPUS_RUNDEN=0
 REPARATUREN=0
@@ -188,6 +361,28 @@ LEERRUNDEN=0
 GRUND="Rundenlimit $MAX erreicht"
 
 for ((i=1; i<=MAX; i++)); do
+  # Vor jeder Runde: sind die Schutzdateien noch die vom Anfang, und blockieren
+  # die Guards noch wirklich? Der Rauchtest lief bisher nur einmal, vor der
+  # ersten Runde — eine Runde, die ihn abräumt, hätte den Rest des Laufs für
+  # sich gehabt. Beides zusammen kostet knapp eine Sekunde je Runde.
+  if [[ "$(schutz_pruefsumme)" != "$SCHUTZ_ANFANG" ]]; then
+    # `diff` liefert 1, sobald es Unterschiede findet, und unter pipefail wird
+    # das der Status der Zuweisung -- `set -e` beendete das Skript dann mitten
+    # im Abbruchgrund, bevor er in stop-reason.txt stand.
+    VERAENDERT=$({ diff <(printf '%s\n' "$SCHUTZ_ANFANG") <(schutz_pruefsumme) || true; } \
+                 | grep -oE '[^ ]+' | grep -vE '^[0-9a-f]{64}' | sort -u | tr '\n' ' ' || true)
+    GRUND="Schutzdateien seit Rundenbeginn verändert (vor Runde $i): $VERAENDERT"
+    break
+  fi
+
+  if ! pruefe_guard_still guard-files.sh \
+        "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$PWD/.claude/settings.json\"}}" \
+     || ! pruefe_guard_still guard-bash.sh \
+        '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}'; then
+    GRUND="Die Guards blockieren vor Runde $i nicht mehr (Rauchtest fehlgeschlagen)"
+    break
+  fi
+
   MODELL="sonnet"
   AUFWAND="high"
   if [[ -f .agents/next-round.json ]] && jq -e . .agents/next-round.json >/dev/null 2>&1; then
@@ -313,7 +508,25 @@ for ((i=1; i<=MAX; i++)); do
     break
   fi
 
-  if ! bash -c "$TESTBEFEHL" > .agents/testrun.txt 2>&1; then
+  # Dieselbe Prüfung am Ergebnis, jetzt für die Schutzdateien statt für die
+  # Tests. Die Prüfsumme oben fängt eine Änderung, die auf der Platte liegen
+  # bleibt; diese hier fängt sie auch dann, wenn die Runde sie mitcommittet
+  # hat — und benennt sie im Pull Request, statt sie in einem Diff von
+  # dreissig Dateien untergehen zu lassen.
+  ANGEFASSTER_SCHUTZ=$(git diff --name-only --diff-filter=ACMDRT "$VORHER" HEAD \
+                       | grep -iE "$MUSTER_SELBST|$MUSTER_DEPS" || true)
+  if [[ -n "$ANGEFASSTER_SCHUTZ" ]]; then
+    GRUND="Runde $i hat geschützte Dateien geändert: $(tr '\n' ' ' <<< "$ANGEFASSTER_SCHUTZ")"
+    break
+  fi
+
+  TEST_RC=0
+  tests_ausfuehren || TEST_RC=$?
+  if (( TEST_RC == 124 )); then
+    GRUND="Der Testbefehl in Runde $i lief länger als MAX_TEST=$MAX_TEST s und wurde beendet"
+    break
+  fi
+  if (( TEST_RC != 0 )); then
     REPARATUREN=$((REPARATUREN + 1))
     if (( REPARATUREN > 1 )); then
       GRUND="Testsuite auch nach der Reparaturrunde rot (Runde $i)"
@@ -344,19 +557,40 @@ for ((i=1; i<=MAX; i++)); do
   fi
   TESTS_VORHER=$TESTS_JETZT
 
-  # Das Notentor. Der Chef legt .agents/grade.json nach der Bewertung durch den
-  # grader-Subagenten an. Fehlt sie, laeuft der Lauf weiter: eine fehlende Note
-  # ist kein Grund aufzuhoeren, aber sie wird benannt.
-  if jq -e '.gesamt | numbers' .agents/grade.json >/dev/null 2>&1; then
-    NOTE=$(jq -r '.gesamt' .agents/grade.json)
-    BEGRUENDUNG=$(jq -r '.begruendung // ""' .agents/grade.json)
+  # Das Notentor.
+  #
+  # Die Note stand bisher in .agents/grade.json — einer Datei, die der Chef
+  # selbst schreibt und die von keinem Muster geschützt ist. Damit war die
+  # Abbruchbedingung des ganzen Laufs eine Selbstauskunft: `{"gesamt": 10}`
+  # hinein, und das Skript meldete "Zielnote erreicht". Der Rest dieses
+  # Entwurfs steht auf "das Skript urteilt, nicht der Agent"; genau hier tat
+  # es das nicht.
+  #
+  # Massgeblich ist deshalb der Ereignisstrom. Den schreibt die CLI, nicht das
+  # Modell: `system/task_started` mit `subagent_type: "grader"` belegt, dass
+  # der grader wirklich lief, und seine Antwort kommt als tool_result mit
+  # derselben tool_use_id zurück. Aus dieser Antwort wird die Zahl gelesen.
+  # grade.json bleibt als Ablage für das Cockpit bestehen, entscheidet aber
+  # nichts mehr; weicht sie ab, wird das benannt.
+  NOTE=$(note_aus_strom ".agents/round-$i.ndjson")
+  NOTE_DATEI=$(jq -r 'select(.gesamt | numbers) | .gesamt' .agents/grade.json 2>/dev/null || true)
+
+  if [[ -z "$NOTE" ]]; then
+    if [[ -n "$NOTE_DATEI" ]]; then
+      echo "Runde $i: .agents/grade.json nennt $NOTE_DATEI, aber im Ereignisstrom steht keine Bewertung des graders. Die Note zählt nicht."
+    else
+      echo "Runde $i hat keine Note hinterlassen (kein grader im Ereignisstrom)."
+    fi
+  else
+    if [[ -n "$NOTE_DATEI" && "$NOTE_DATEI" != "$NOTE" ]]; then
+      echo "Achtung: .agents/grade.json nennt $NOTE_DATEI, der grader selbst $NOTE. Gewertet wird $NOTE."
+    fi
+    BEGRUENDUNG=$(jq -r '.begruendung // ""' .agents/grade.json 2>/dev/null || true)
     echo "Note nach Runde $i: $NOTE von 10 (Ziel $ZIELNOTE) — $BEGRUENDUNG"
-    if jq -e --argjson z "$ZIELNOTE" '.gesamt >= $z' .agents/grade.json >/dev/null 2>&1; then
+    if jq -n --argjson n "$NOTE" --argjson z "$ZIELNOTE" '$n >= $z' | grep -q true; then
       GRUND="Zielnote erreicht in Runde $i: $NOTE von 10 (Ziel $ZIELNOTE)"
       break
     fi
-  else
-    echo "Runde $i hat keine brauchbare Note hinterlassen (.agents/grade.json)."
   fi
 
   GRUND="Rundenlimit $MAX erreicht"

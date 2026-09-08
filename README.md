@@ -30,7 +30,7 @@ Meldung sagt jeweils, was.
 
 ## Voraussetzungen
 
-- `jq`, `gh`, `git`, `node` ≥ 20, `claude`
+- `jq`, `gh`, `git`, `sha256sum`, `node` ≥ 20, `claude`
 - `gh auth login`
 - ein sauberes Arbeitsverzeichnis auf `main`
 - **Branch-Schutz für `main`** — hier aktiv, mit Pflicht zum Pull Request und
@@ -38,6 +38,13 @@ Meldung sagt jeweils, was.
   privat verlangt GitHub dafür Pro. Ohne Branch-Schutz hängt der Schutz von
   `main` allein an `guard-bash.sh`, und die ist umgehbar.
   Zurücknehmen: `gh api -X DELETE repos/<owner>/<repo>/branches/main/protection/enforce_admins`
+
+  Der Schutz verlangt einen Pull Request, aber **keine Freigabe**
+  (`required_approving_review_count: 0`) — auf einem Ein-Personen-Konto ginge
+  das auch nicht, niemand kann den eigenen Pull Request freigeben. Was
+  stattdessen geht, ist eine Pflicht zur grünen Suite:
+  `.github/workflows/tests.yml` liegt bei, und der Befehl zum Scharfschalten
+  steht als Kommentar darin. Erst nach dem ersten grünen Lauf einschalten.
 
 Auf Windows läuft alles direkt in der Git Bash; Claude Code führt auch die Hooks
 darüber aus. Der Container in `.devcontainer/` ist die eigentlich vorgesehene
@@ -49,13 +56,23 @@ mitgeliefert, aber ungetestet (Docker Desktop lief hier nicht).
 Oben in `loop.sh`:
 
 ```bash
-TESTBEFEHL="node --test"                      # muss bei Fehlschlag != 0 liefern
+TESTBEFEHL="node --test --test-reporter=tap"  # muss bei Fehlschlag != 0 liefern
 TESTZAEHLER="./.agents/hooks/count-tests.sh"  # gibt die Anzahl Tests als Zahl aus
-MAX_TURNS=200          # harter Deckel pro Runde
+MAX_TURNS=60           # harter Deckel pro Runde
 MAX_OPUS_RUNDEN=5      # so viele Eskalationsrunden auf Opus pro Lauf
-MAX_BUDGET_USD=15      # dritte Notbremse pro Runde
+MAX_BUDGET_USD=4       # dritte Notbremse pro Runde, Listenpreis-Schätzung
 MAX_LEERRUNDEN=2       # so viele Runden ohne Codeänderung, dann Abbruch
+BASIS_BRANCH="main"    # Zielbranch des Pull Requests
+ZIELNOTE=8.5           # ab dieser Gesamtnote ist der Auftrag erledigt
+MAX_STILLE=600         # so lange darf der Ereignisstrom stillstehen
+MAX_RUNDE=3600         # harte Zeitgrenze pro Runde
+MAX_TEST=1800          # Zeitgrenze für Testbefehl und Testzähler
 ```
+
+`MAX_TURNS` und `MAX_BUDGET_USD` standen auf 200 und 15. Über elf gemessene
+echte Runden brauchte die teuerste 31 Turns und 2,56 USD — beide "Notbremsen"
+konnten also nie greifen. Jetzt liegen sie etwa beim Doppelten des gemessenen
+Maximums. Die Zahlen stehen in ABNAHME.md.
 
 Und `TASKS.md` — das ist der eigentliche Auftrag. Eine Zeile pro Aufgabe,
 `- [ ] Beschreibung`, wichtigste oben.
@@ -88,6 +105,9 @@ lange dauern, ohne dass ein Kontextfenster überläuft.
 | zwei Runden ohne Codeänderung | der Agent dreht im Kreis |
 | Testsuite rot | eine Reparaturrunde, danach Abbruch |
 | ein versionierter Test wurde geändert | am Diff der Runde, egal auf welchem Weg |
+| eine geschützte Datei wurde geändert | Prüfsumme vor jeder Runde **und** am Diff |
+| ein Guard blockiert nicht mehr | Rauchtest vor jeder Runde, nicht nur vor der ersten |
+| der Testbefehl läuft länger als `MAX_TEST` | er wird beendet, der Lauf endet mit Grund |
 | Testanzahl gesunken | Verdacht auf gelöschte oder geskippte Tests |
 | Rundenlimit erreicht | Abbruch |
 | `claude` endet mit Fehler, Turn-Deckel oder Budget-Deckel | Abbruch |
@@ -110,19 +130,23 @@ nicht sprachlich — Prompts sind Bitten, Hooks sind Gesetze.
 | Geheimnisse lesen oder schreiben | Hook **und** `permissions.deny`, doppelt |
 | `--no-verify`, `git stash/clean/restore/reset --hard`, Push auf `main`, Force-Push | `guard-bash.sh` |
 | `git apply`, `patch`, `find -exec`, `npm install` — Werkzeuge, deren Ziel nicht im Befehl steht | `guard-bash.sh`, rundheraus |
+| PowerShell-Schreibverben, `.exe`-Schreibweisen, `SED` in Grossbuchstaben | `guard-bash.sh` |
+| Archive und `xargs` — Ziele, die nicht im Befehl stehen | `guard-bash.sh`, rundheraus |
 | Tests laufen im Skript, der Rückgabewert entscheidet | `loop.sh` |
 | Testanzahl darf nicht sinken | `loop.sh` |
 | kein versionierter Test wurde in der Runde geändert | `loop.sh`, am Diff |
+| keine geschützte Datei hat sich seit dem Start verändert | `loop.sh`, an einer Prüfsumme vor jeder Runde |
+| die Note kommt vom grader, nicht aus einer Datei | `loop.sh`, aus dem Ereignisstrom |
 
 Eine neue Testdatei **anzulegen** ist erlaubt — nur eine bestehende zu ändern
 nicht. Braucht der Coder legitim eine Teständerung oder eine neue Abhängigkeit,
 ist das ein Fall für `QUESTIONS.md`: er notiert seine Empfehlung und
 überspringt die Aufgabe.
 
-`test/guards.test.js` prüft all das bei jedem Testlauf, und
-`test/guards-regression.test.js` prüft zusätzlich jeden Umgehungsweg, der in
-einem adversarialen Review dieses Repositories tatsächlich funktioniert hat —
-zusammen 29 Tests mit 90 Einzelfällen. Die Guards sind das Einzige, was den Loop davon abhält,
+Die fünf Dateien `test/guards*.test.js` prüfen all das bei jedem Testlauf:
+den Grundbestand, und dazu jeden Umgehungsweg, der in einem der adversarialen
+Reviews dieses Repositories tatsächlich funktioniert hat — zusammen 75 Tests.
+Jeder einzelne Fall darin ist einmal durchgekommen. Die Guards sind das Einzige, was den Loop davon abhält,
 seinen eigenen Erfolg zu fälschen; ein Guard, der still aufhört zu wirken, sieht
 von aussen aus wie ein Guard, der wirkt. Deshalb prüft `loop.sh` vor der ersten
 Runde zusätzlich mit einem fingierten Payload nach, dass beide Guards wirklich
@@ -132,21 +156,23 @@ läuft nur ins Leere.
 ## Prüfen, ohne Kontingent zu verbrennen
 
 ```bash
-node --test     # 36 Tests, davon 29 fuer die Guards
-./abnahme.sh    # 39 Pruefungen der Schleifenlogik gegen einen claude-Stub
+node --test     # 82 Tests, davon 75 fuer die Guards
+./abnahme.sh    # 60 Pruefungen der Schleifenlogik gegen einen claude-Stub
 ```
 
 `abnahme.sh` ersetzt `claude` durch einen Stub, der genau das Verhalten
 nachspielt, das die jeweilige Bedingung provozieren soll: rote Suite,
 gelöschte Tests, Stillstand, Müll in `next-round.json`, aufgebrauchte
-Opus-Eskalationen. Läuft in ein paar Minuten durch und kostet nichts. Nach
-jeder Änderung an `loop.sh` einmal laufen lassen.
+Opus-Eskalationen, abgeräumte Guards, ein Testbefehl, der nicht mehr aufhört.
+Kostet nichts. Nach jeder Änderung an `loop.sh` einmal laufen lassen; die
+gemessene Laufzeit steht am Ende der Ausgabe und in ABNAHME.md.
 
 ## Auf ein anderes Projekt umhängen
 
 1. Diese Dateien ins Zielrepo kopieren: `CLAUDE.md`, `round.md`, `loop.sh`,
-   `TASKS.md`, `STATUS.md`, `QUESTIONS.md`, `.gitattributes`, `.gitignore`,
-   `.agents/hooks/`, `.claude/`.
+   `abnahme.sh`, `TASKS.md`, `STATUS.md`, `QUESTIONS.md`, `.gitattributes`,
+   `.gitignore`, `.agents/hooks/`, `.claude/`, `test/guards*.test.js`.
+   Im Cockpit macht das ein Klick, und ein zweiter zieht sie später nach.
 2. `TESTBEFEHL` und `TESTZAEHLER` oben in `loop.sh` anpassen. Der Zähler muss
    **immer** eine Zahl ausgeben und **immer** mit 0 enden, auch bei roter Suite.
    `.agents/hooks/count-tests.sh` als Vorlage nehmen.
@@ -156,9 +182,13 @@ jeder Änderung an `loop.sh` einmal laufen lassen.
 5. `./loop.sh 1` als Trockenlauf.
 
 `src/tasklist.js` und seine Tests sind nur das Beispielprojekt, an dem der Loop
-hier arbeitet — die kannst du weglassen. `test/guards.test.js`,
-`test/guards-regression.test.js` und `abnahme.sh` solltest du mitnehmen; die
-hängen nicht am Beispielprojekt.
+hier arbeitet — die kannst du weglassen. **Alle** `test/guards*.test.js` und
+`abnahme.sh` solltest du mitnehmen; die hängen nicht am Beispielprojekt.
+
+Nimm den Glob wörtlich: die Liste stand hier zweimal als Aufzählung und ist
+zweimal veraltet, sobald eine fünfte Guard-Testdatei dazukam. `abnahme.sh`
+kopiert deshalb `test/guards*.test.js`, und das Cockpit liest im Scaffold nach,
+statt eine Liste zu führen.
 
 ## Was hier bewusst fehlt
 
