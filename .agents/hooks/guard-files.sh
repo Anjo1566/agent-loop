@@ -108,6 +108,16 @@ case "$WERKZEUG" in
   *) exit 0 ;;
 esac
 
+# Schreiben ausserhalb des Projekts. Eine Verbotsliste erwischt hier nie alles
+# — ~/.bashrc, ~/.gitconfig und ~/.local/bin/claude standen in keiner. Deshalb
+# umgekehrt: im Projekt ja, sonst nur in Temp-Verzeichnissen.
+for KANDIDAT in "${KANDIDATEN[@]}"; do
+  if ausserhalb_des_projekts "$KANDIDAT" "$PROJEKT"; then
+    echo "Blocked: this writes outside the project. The agent changes the repository it works in, nothing else. Use a temp directory for scratch files." >&2
+    exit 2
+  fi
+done
+
 # Bestehende Tests sind gesperrt, neue anzulegen ist erlaubt. Die Charta
 # verlangt beides: "test design for new code" darf der Agent entscheiden,
 # "never change, remove or skip an existing test" darf er nicht.
@@ -115,10 +125,11 @@ esac
 # Massgeblich ist, ob Git die Datei kennt, nicht ob sie auf der Platte liegt.
 # Sonst genügt Löschen-dann-neu-schreiben, um die Regel auszuhebeln.
 if trifft "$MUSTER_TESTS"; then
-  # git bekommt den projektrelativen Pfad: einen aufgelösten Alias-Pfad kann es
-  # dem Repository unter Umständen nicht zuordnen und meldete dann fälschlich
-  # "unbekannt", also "neue Datei".
-  if git -C "$PROJEKT" ls-files --error-unmatch -- "$REL" >/dev/null 2>&1; then
+  # Gefragt wird nach dem Dateinamen, nicht nach dem Pfad: der Git-Index
+  # unterscheidet Gross- und Kleinschreibung, NTFS nicht, und `TEST/x.test.js`
+  # galt deshalb als neue Datei, überschrieb aber `test/x.test.js`.
+  # ist_verfolgter_test() in protected-paths.sh erklärt das ausführlich.
+  if ist_verfolgter_test "$REL" "$PROJEKT"; then
     echo "Blocked: existing tests must not be changed. Fix the code, or add an entry to QUESTIONS.md. Writing a NEW test file is allowed." >&2
     exit 2
   fi

@@ -136,6 +136,20 @@ test('guard-bash allows a push to the agent branch', () => {
   // Regression: a substring match on "main" blocked legitimate branch names.
   allows('guard-bash.sh', bashCall('git push -u origin agent/maintenance'), 'branch containing "main"')
   allows('guard-bash.sh', bashCall('git push -u origin agent/20260907-domain-fix'), 'branch containing "domain"')
+  // zyklus.sh drives the review/fix cycles and pushes one branch per cycle.
+  allows('guard-bash.sh', bashCall('git push -u origin zyklus/1'), 'cycle branch')
+  allows('guard-bash.sh', bashCall('git push -u origin refs/heads/zyklus/12'), 'cycle branch, full ref')
+})
+
+test('guard-bash allows only the agent and cycle namespaces', () => {
+  // The rule used to be a deny list of HEAD, main and master; every other name
+  // walked through, so zyklus/3 passed by accident rather than by design.
+  blocks('guard-bash.sh', bashCall('git push -u origin fix/something'), 'unrelated namespace')
+  blocks('guard-bash.sh', bashCall('git push -u origin feature/x'), 'feature branch')
+  // The real destination of a refspec is on the right, where the main check
+  // only looks for main and master.
+  blocks('guard-bash.sh', bashCall('git push origin zyklus/3:something'), 'refspec to another branch')
+  blocks('guard-bash.sh', bashCall('git push origin zyklus/3:main'), 'refspec to main')
 })
 
 test('guard-bash closes the shell route around the file guard', () => {
