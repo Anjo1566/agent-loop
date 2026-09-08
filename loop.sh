@@ -10,6 +10,8 @@ MAX_BUDGET_USD=15           # dritte Notbremse pro Runde, Listenpreis-Schätzung
 MAX_LEERRUNDEN=2            # so viele Runden ohne Codeänderung, dann Abbruch
 BASIS_BRANCH="main"         # Zielbranch des Pull Requests
 ZIELNOTE=8.5                # ab dieser Gesamtnote ist der Auftrag erledigt
+MAX_STILLE=600              # so lange darf der Ereignisstrom stillstehen
+MAX_RUNDE=3600              # harte Zeitgrenze pro Runde, egal wie fleissig
 # ------------------------------------------------------------------------
 #
 # Beide Befehle laufen über `bash -c`, dürfen also Pipes, Anführungszeichen und
@@ -119,6 +121,63 @@ zaehle_tests() {
   [[ "$roh" =~ ^[0-9]+$ ]] && printf '%s' "$roh" || printf ''
 }
 
+# --- Der Wachhund -------------------------------------------------------
+# Die Bremsen --max-turns und --max-budget-usd sitzen IM Modell: sie greifen
+# nur, solange die Sitzung noch antwortet. Stirbt der Prozess von aussen oder
+# haengt er an einer Leitung, zaehlt niemand mehr etwas hoch, und `wait` unten
+# wartet bis in alle Ewigkeit. Genau das ist passiert: der grader schoss mit
+# `taskkill //F //IM node.exe` alle node-Prozesse ab -- sich selbst, das
+# Cockpit und die Sitzung -- und dieses Skript hing danach vier Stunden an
+# einem toten Kind. Von aussen sah der Lauf die ganze Zeit gesund aus.
+#
+# Deshalb urteilt der Wachhund nicht an der Absicht, sondern am Ergebnis, so
+# wie die Testpruefung weiter unten: waechst der Ereignisstrom nicht mehr,
+# passiert nichts mehr. Das gilt fuer jede Ursache, auch fuer die, an die
+# hier niemand gedacht hat.
+
+# Einen Prozessbaum beenden -- nach PID, nie nach Abbildname. Der Unterschied
+# ist genau der, an dem dieser Lauf gestorben ist.
+toete_baum () {
+  local pid="$1" winpid=""
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # Unter Windows kennt `kill` nur die MSYS-PID und laesst die Enkel am
+      # Leben. taskkill //T raeumt den ganzen Baum ab, braucht dafuer aber die
+      # Windows-PID -- Spalte 4 bei `ps -W`.
+      winpid=$(ps -W 2>/dev/null | awk -v p="$pid" '$1 == p { print $4; exit }')
+      [[ -n "$winpid" && "$winpid" != "0" ]] \
+        && taskkill //PID "$winpid" //T //F >/dev/null 2>&1
+      ;;
+    *) kill -TERM "-$pid" 2>/dev/null ;;
+  esac
+  kill -TERM "$pid" 2>/dev/null
+  ( sleep 5; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+}
+
+# Der Grund steht in einer Datei, nicht im Rueckgabewert: ein abgeschossener
+# Prozess meldet unter Windows auch mal 0, und dann haette die Runde als
+# gelungen gegolten.
+wachhund () {
+  local pid="$1" datei="$2" start jetzt letzte groesse alt=-1
+  start=$(date +%s); letzte=$start
+  while sleep 15; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    jetzt=$(date +%s)
+    groesse=$(wc -c < "$datei" 2>/dev/null || echo 0)
+    if [[ "$groesse" != "$alt" ]]; then alt="$groesse"; letzte="$jetzt"; fi
+    if (( jetzt - letzte >= MAX_STILLE )); then
+      printf 'der Ereignisstrom stand %s s still\n' "$((jetzt - letzte))" \
+        > .agents/wachhund.txt
+      toete_baum "$pid"; return 0
+    fi
+    if (( jetzt - start >= MAX_RUNDE )); then
+      printf 'die Runde ueberschritt die Zeitgrenze von %s s\n' "$MAX_RUNDE" \
+        > .agents/wachhund.txt
+      toete_baum "$pid"; return 0
+    fi
+  done
+}
+
 TESTS_VORHER=$(zaehle_tests)
 [[ -n "$TESTS_VORHER" ]] \
   || fehler "TESTZAEHLER liefert keine Zahl. Die Bremse 'Testanzahl gesunken' wäre wirkungslos."
@@ -163,6 +222,7 @@ for ((i=1; i<=MAX; i++)); do
   # --bare würde Hooks, Subagents und CLAUDE.md abschalten, also genau die
   # Schutzmechanismen. Das gehört hier niemals hin.
   RUNDE_RC=0
+  rm -f .agents/wachhund.txt
   claude -p "$(cat round.md)" \
         --model "$MODELL" --effort "$AUFWAND" \
         --max-turns "$MAX_TURNS" \
@@ -170,7 +230,13 @@ for ((i=1; i<=MAX; i++)); do
         --output-format stream-json --verbose \
         --dangerously-skip-permissions \
         --allowedTools "Read,Write,Edit,Bash,Glob,Grep,Agent" \
-        < /dev/null > ".agents/round-$i.ndjson" || RUNDE_RC=$?
+        < /dev/null > ".agents/round-$i.ndjson" &
+  RUNDE_PID=$!
+  wachhund "$RUNDE_PID" ".agents/round-$i.ndjson" &
+  WACHHUND_PID=$!
+  wait "$RUNDE_PID" || RUNDE_RC=$?
+  kill "$WACHHUND_PID" 2>/dev/null || true
+  wait "$WACHHUND_PID" 2>/dev/null || true
 
   # Fuer die Auswertung hier zaehlt nur die Abschlusszeile. Sie traegt dieselben
   # Felder, die vorher im Rundenjson standen -- alles unten bleibt deshalb
@@ -188,6 +254,13 @@ for ((i=1; i<=MAX; i++)); do
 
   DAUER=$(jq -r '.duration_ms // "?"' ".agents/round-$i.json" 2>/dev/null || echo "?")
   echo "Runde $i | $MODELL | $AUFWAND | ${DAUER}ms" >> .agents/run.log
+
+  # Der Wachhund zuerst: hat er zugeschlagen, ist jeder andere Befund an
+  # dieser Runde eine Folge davon und wuerde nur vom Grund ablenken.
+  if [[ -s .agents/wachhund.txt ]]; then
+    GRUND="Runde $i vom Wachhund beendet, $(cat .agents/wachhund.txt)"
+    break
+  fi
 
   # Ein API-Fehler oder eine erreichte Nutzungsgrenze kommt als
   # subtype "success" mit is_error=true zurück. .is_error ist deshalb das

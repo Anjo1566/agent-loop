@@ -86,12 +86,61 @@ if im_befehl "${G}(npm|pnpm|bun)[[:space:]]+(i|install|add|uninstall|remove|rm|u
   exit 2
 fi
 
-if im_befehl "${G}(mkfs|shutdown|reboot)([[:space:]]|$)|:\(\)\{|${G}(npm|yarn|pnpm)[[:space:]]+publish|${G}rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*[rf][a-zA-Z]*[[:space:]]+(/|~|\.\.?)([[:space:]]|$)"; then
+if im_befehl "${G}mkfs([[:space:]]|$)|:\(\)\{|${G}(npm|yarn|pnpm)[[:space:]]+publish|${G}rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*[rf][a-zA-Z]*[[:space:]]+(/|~|\.\.?)([[:space:]]|$)"; then
   echo "Blocked: this is irreversible or has external effects." >&2
   exit 2
 fi
 
-# --- 2. Pushen: nur auf den Agenten-Branch, nie mit Gewalt ---------------
+# --- 2. Prozesse beenden: der Agent laeuft selbst in einem -------------
+# Diese Regel gibt es, weil genau das passiert ist: der grader hatte den
+# Server gestartet, um ihn zu pruefen, und raeumte danach mit
+# `taskkill //F //IM node.exe //T` auf. Das trifft nicht nur den Server,
+# sondern JEDEN node-Prozess auf der Maschine -- also auch die Claude-Code-
+# Sitzung, die den Befehl gerade ausfuehrte, und das Cockpit, das zusah.
+# Der Ereignisstrom brach mitten im Wort ab, loop.sh hing vier Stunden an
+# einem toten Kind, und das Dashboard zeigte die ganze Zeit "LIVE".
+#
+# Die anderen Regeln hier schuetzen die INTEGRITAET des Laufs (keiner faelscht
+# Tests, keiner pusht mit Gewalt). Diese schuetzt seine VERFUEGBARKEIT: ein
+# Lauf, der sich selbst abschiesst, hinterlaesst keine Spur, aus der man
+# lernen koennte -- der Guard, der ihn haette warnen sollen, stirbt mit.
+#
+# Deshalb pauschal, nicht nach Ziel unterschieden: welcher Prozess hinter
+# einer PID oder einem Abbildnamen steckt, weiss ein Hook nicht. Wer etwas
+# gestartet hat, das wieder aufhoeren soll, startet es mit einer Zeitgrenze
+# (`timeout 20 npm start`) statt es hinterher zu erschiessen.
+TOETER="${G}(taskkill|tskill|pkill|killall|logoff|shutdown|reboot|halt|poweroff)${GR}"
+TOETER_PS='(stop-process|stop-computer|restart-computer|stop-service|suspend-process)'
+TOETER_DIENST="${G}(sc|net)[[:space:]]+stop${GR}|${G}wmic[[:space:]][^;&|]*process[^;&|]*(delete|terminate)"
+# `xargs kill` traegt die PIDs erst in der Pipe, nicht im Befehl.
+TOETER_XARGS="${G}xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+kill${GR}"
+# Das blosse `kill` ist ein gewoehnliches englisches Wort: `grep -rn "kill"`
+# und `git commit -m "kill 3 flaky tests"` duerfen nicht blockieren. Deshalb
+# nur in Befehlsposition (Zeilenanfang oder nach einem Shell-Operator, NICHT
+# nach einem Anfuehrungszeichen) und nur, wenn ein Signal, eine PID oder eine
+# Job-Nummer folgt -- also nur dann, wenn es wirklich toetet.
+BEFEHLSPOSITION='(^|[;&|(){}`])[[:space:]]*'
+TOETER_KILL="${BEFEHLSPOSITION}kill([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+(\\\$|[0-9]|%|\`|\")"
+
+if printf '%s' "$BEFEHL" | grep -qiE "$TOETER" \
+   || printf '%s' "$BEFEHL" | grep -qiE "$TOETER_PS" \
+   || printf '%s' "$BEFEHL" | grep -qiE "$TOETER_DIENST" \
+   || im_befehl "$TOETER_XARGS" \
+   || im_befehl "$TOETER_KILL"; then
+  echo "Blocked: you are yourself a node process, and so is the cockpit watching you. Killing processes by name or PID ends your own run silently. Start anything long-running with a time limit instead, e.g. 'timeout 20 npm start'." >&2
+  exit 2
+fi
+
+# Dieselbe Tat durch einen Interpreter. Die Pfadpruefung weiter unten kennt
+# INTERPRETER und INLINE_SCHALTER schon; hier zaehlt nur, was der Einzeiler tut.
+if im_befehl "${G}(perl|python[0-9.]*|node|ruby|php)${GR}" \
+   && im_befehl '(^|[[:space:]])--?[a-zA-Z]*(c|e)([[:space:]]|=|$)' \
+   && printf '%s' "$BEFEHL" | grep -qiE '(process\.kill|os\.kill|killpg|\.Kill\(|TerminateProcess)'; then
+  echo "Blocked: killing a process from a one-liner is the same act as taskkill. See above." >&2
+  exit 2
+fi
+
+# --- 3. Pushen: nur auf den Agenten-Branch, nie mit Gewalt ---------------
 # Am Verb ankern, damit `git -c foo=bar push` nicht am Muster vorbeiläuft.
 if im_befehl "${G}git\b[^;&|]*[[:space:]]push([[:space:]]|$)"; then
   # `-fu` ist dasselbe wie `-uf`: das f darf irgendwo im Flag-Bündel stehen.
@@ -112,7 +161,7 @@ if im_befehl "${G}git\b[^;&|]*[[:space:]]push([[:space:]]|$)"; then
   fi
 fi
 
-# --- 3. Schreibzugriff auf geschützte Pfade über die Shell ---------------
+# --- 4. Schreibzugriff auf geschützte Pfade über die Shell ---------------
 # Den Befehl in Tokens zerlegen, damit die Pfadmuster aus protected-paths.sh
 # (die mit `$` ankern) gegen einzelne Pfade greifen und nicht gegen die ganze
 # Zeile.

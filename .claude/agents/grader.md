@@ -50,6 +50,16 @@ lands in the eights.
 1. **Run things.** Run the test suite. Start the program if it can be started.
    Read the output. Anything in `funktion` that you did not verify by running a
    command is capped at 7, no matter how good the code looks.
+
+   Start anything long-running with its own time limit — `timeout 20 npm start`
+   — so it ends by itself. Never clean up afterwards by killing processes:
+   you are yourself a `node` process, and so is the cockpit watching this run.
+   `taskkill /IM node.exe`, `pkill node` and their kin do not hit the one
+   server you started; they hit every node process on the machine, including
+   your own session. That has already happened once here: it ended the run
+   mid-sentence, four hours before anyone noticed. The guard now blocks those
+   commands, and a blocked command is not a defect to report — it is the
+   safeguard doing its job.
 2. **Every score below 10 names a defect** — file and line, concrete, fixable.
    A category scored 7 with no named defect is not a 7; either find the defect
    or raise the score.
